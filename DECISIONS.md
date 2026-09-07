@@ -31,3 +31,23 @@
 - **Decision**: Treat all PDF uploads as untrusted input. Enforce magic byte check (`%PDF-`), MIME check, 50MB file limit, 120 page limit, path traversal sanitization, and output DOM sanitization.
 - **Why**: PDF files are notorious attack vectors (decompression bombs, malformed xref tables, prompt injection payloads).
 - **Alternatives Considered**: Permissive uploads (vulnerable to resource exhaustion).
+
+### ADR 007: Resilient Caching with Zero-Crash Fallback
+- **Decision**: Implement Redis caching with structured key namespaces (`factlens:doc:{sha256}:facts:{version}`, `factlens:comparisons:{rel}`) and automatic in-memory fallback if Redis is unreachable.
+- **Why**: Repeated extraction of identical documents and expensive cross-document reconciliations waste compute and tokens. If Redis is down, the application must degrade gracefully without crashing.
+- **Alternatives Considered**: Direct cache without fallback (crashes if Redis stops); in-memory only (cannot share state across worker processes).
+
+### ADR 008: Content-Based SHA-256 Deduplication with Database Uniqueness
+- **Decision**: Deduplicate uploaded files based on SHA-256 content hashes rather than filenames, backed by a `UNIQUE INDEX idx_documents_sha256` in SQLite and atomic insertion (`create_document_atomic`).
+- **Why**: Different users frequently upload the same document under different filenames (e.g. `report.pdf` vs `delhivery_fy24.pdf`), or identical files concurrently. Database-level constraints eliminate race conditions and avoid redundant processing.
+- **Alternatives Considered**: Filename-based deduplication (fails when renamed); application-level locking (complex and fragile).
+
+### ADR 009: Decoupled Asynchronous Job Queue with Worker Error Isolation
+- **Decision**: Decouple PDF upload requests by returning `202 Accepted` with a `job_id`, delegating extraction and reconciliation to background workers with exponential backoff retries and status tracking.
+- **Why**: Multi-page PDF parsing and LLM calls easily exceed HTTP client timeouts (30-60s). Decoupling keeps the API responsive and isolates worker errors so single-document failures do not crash the service.
+- **Alternatives Considered**: Heavy Celery/RabbitMQ stack (excessive setup overhead for interview evaluation); synchronous blocking uploads (prone to HTTP 504 timeouts).
+
+### ADR 010: Fail-Closed Malware Scanning & Transparent Dev Mock
+- **Decision**: Enforce malware scanning prior to file parsing or LLM prompt ingestion. In production, connect to ClamAV `clamd` (TCP/Unix socket) with fail-closed rejection (HTTP 503). In development environments without ClamAV, provide a transparent `dev_mock` mode that catches EICAR signatures and explicitly logs that real AV was not used.
+- **Why**: Malicious PDF attachments must never reach extraction logic or LLMs. Transparent mocking ensures developers and evaluators know whether real antivirus scanning was performed without breaking local testability.
+- **Alternatives Considered**: Pretending clean scan in dev without logging (dishonest security posture); requiring local ClamAV installation (breaks instant evaluation).

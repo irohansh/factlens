@@ -17,6 +17,8 @@ document.addEventListener('DOMContentLoaded', () => {
   
   const engineStatusPill = document.getElementById('engineStatusPill');
   const engineStatusText = document.getElementById('engineStatusText');
+  const cacheStatusPill = document.getElementById('cacheStatusPill');
+  const cacheStatusText = document.getElementById('cacheStatusText');
   const btnSettings = document.getElementById('btnSettings');
   const settingsModal = document.getElementById('settingsModal');
   const btnCloseSettings = document.getElementById('btnCloseSettings');
@@ -39,6 +41,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const fileInput = document.getElementById('fileInput');
   const docTableBody = document.getElementById('docTableBody');
   const btnRunPipeline = document.getElementById('btnRunPipeline');
+  const jobStatusBanner = document.getElementById('jobStatusBanner');
+  const jobSpinner = document.getElementById('jobSpinner');
+  const jobBannerText = document.getElementById('jobBannerText');
+  const jobProgressBar = document.getElementById('jobProgressBar');
+  const duplicateAlertBanner = document.getElementById('duplicateAlertBanner');
+  const duplicateAlertText = document.getElementById('duplicateAlertText');
 
   const factsList = document.getElementById('factsList');
   const factSearchInput = document.getElementById('factSearchInput');
@@ -75,9 +83,20 @@ document.addEventListener('DOMContentLoaded', () => {
         engineStatusText.textContent = 'Offline Deterministic Mode';
         engineStatusPill.querySelector('.status-dot').style.backgroundColor = '#10b981';
       }
+
+      if (cacheStatusPill && cacheStatusText) {
+        if (data.redis_connected) {
+          cacheStatusText.textContent = 'Redis: Connected';
+          cacheStatusPill.querySelector('.status-dot').style.backgroundColor = '#10b981';
+        } else {
+          cacheStatusText.textContent = 'Cache: In-Memory Safe Fallback';
+          cacheStatusPill.querySelector('.status-dot').style.backgroundColor = '#f59e0b';
+        }
+      }
     } catch (e) {
       engineStatusText.textContent = 'Connection Error';
       engineStatusPill.querySelector('.status-dot').style.backgroundColor = '#ef4444';
+      if (cacheStatusText) cacheStatusText.textContent = 'Cache Offline';
     }
   }
 
@@ -199,9 +218,22 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function getScanBadge(status, result) {
+    const title = result ? `title="${escapeHtml(result)}"` : '';
+    if (status === 'clean') {
+      return `<span class="badge badge-corroboration" ${title}>🛡️ Clean</span>`;
+    } else if (status === 'mock_scanned') {
+      return `<span class="badge badge-contextual" ${title}>🛡️ Dev Mock</span>`;
+    } else if (status === 'infected') {
+      return `<span class="badge badge-contradiction" ${title}>☣️ Infected</span>`;
+    } else {
+      return `<span class="badge badge-dataset" ${title}>${escapeHtml(status || 'pending')}</span>`;
+    }
+  }
+
   function renderDocTable() {
     if (appState.documents.length === 0) {
-      docTableBody.innerHTML = `<tr><td colspan="5" style="text-align:center; color: var(--text-muted);">No documents uploaded yet. Drag and drop PDFs above to start.</td></tr>`;
+      docTableBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color: var(--text-muted);">No documents uploaded yet. Drag and drop PDFs above to start.</td></tr>`;
       return;
     }
 
@@ -210,8 +242,9 @@ document.addEventListener('DOMContentLoaded', () => {
         <td><strong>${escapeHtml(d.original_name)}</strong></td>
         <td><span class="page-tag">${d.page_count} pages</span></td>
         <td>${(d.file_size_bytes / (1024*1024)).toFixed(2)} MB</td>
-        <td><code style="font-size:0.75rem; color: var(--text-muted);">${d.sha256_hash.slice(0, 16)}...</code></td>
-        <td><span class="badge ${d.status === 'processed' ? 'badge-corroboration' : 'badge-dataset'}">${d.status}</span></td>
+        <td><code style="font-size:0.75rem; color: var(--text-muted);" title="${d.sha256_hash}">${d.sha256_hash.slice(0, 16)}...</code></td>
+        <td>${getScanBadge(d.scan_status, d.scan_result)}</td>
+        <td><span class="badge ${d.status === 'processed' ? 'badge-corroboration' : (d.status === 'queued' ? 'badge-dataset' : 'badge-contextual')}">${d.status}</span></td>
       </tr>
     `).join('');
   }
@@ -245,13 +278,76 @@ document.addEventListener('DOMContentLoaded', () => {
         const err = await res.json();
         throw new Error(err.detail || 'Upload failed');
       }
-      await loadAllData();
-      dropZone.querySelector('.dropzone-title').innerHTML = `Uploaded & processed! Drag more, or <span class="text-accent">browse</span>`;
+      const uploadItems = await res.json();
+      await loadDocuments();
 
+      let hasActiveJobs = false;
+      let hasDuplicates = false;
+
+      for (const item of uploadItems) {
+        if (item.is_duplicate) {
+          hasDuplicates = true;
+          if (duplicateAlertBanner && duplicateAlertText) {
+            duplicateAlertText.textContent = item.message;
+            duplicateAlertBanner.style.display = 'flex';
+            setTimeout(() => { duplicateAlertBanner.style.display = 'none'; }, 7000);
+          }
+        }
+        if (item.job_id && !item.is_duplicate) {
+          hasActiveJobs = true;
+          pollJobProgress(item.job_id);
+        }
+      }
+
+      if (!hasActiveJobs && !hasDuplicates) {
+        await loadAllData();
+      }
+
+      dropZone.querySelector('.dropzone-title').innerHTML = `Upload received! Drag more, or <span class="text-accent">browse</span>`;
     } catch (e) {
       alert(`Upload rejected: ${e.message}`);
       dropZone.querySelector('.dropzone-title').innerHTML = `Drag & drop PDF documents here, or <span class="text-accent">browse</span>`;
     }
+  }
+
+  function pollJobProgress(jobId) {
+    if (!jobStatusBanner) return;
+    jobStatusBanner.style.display = 'flex';
+    jobStatusBanner.className = 'alert-banner alert-info';
+    jobSpinner.style.display = 'block';
+    jobBannerText.textContent = `Job ${jobId}: Processing document in background...`;
+    jobProgressBar.style.width = '15%';
+
+    const pollTimer = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/jobs/${jobId}`);
+        if (!res.ok) return;
+        const job = await res.json();
+
+        const pct = Math.round((job.progress || 0) * 100);
+        jobProgressBar.style.width = `${Math.max(15, pct)}%`;
+
+        if (job.status === 'completed') {
+          clearInterval(pollTimer);
+          jobStatusBanner.className = 'alert-banner alert-success';
+          jobSpinner.style.display = 'none';
+          jobProgressBar.style.width = '100%';
+          jobBannerText.textContent = `Document processing complete! Facts and reconciliation updated.`;
+          await loadAllData();
+          setTimeout(() => { jobStatusBanner.style.display = 'none'; }, 4000);
+        } else if (job.status === 'failed') {
+          clearInterval(pollTimer);
+          jobStatusBanner.className = 'alert-banner alert-warning';
+          jobSpinner.style.display = 'none';
+          jobBannerText.textContent = `Processing failed: ${job.error_message || 'Unknown error'}`;
+          await loadDocuments();
+        } else if (job.retry_count > 0) {
+          jobBannerText.textContent = `Job ${jobId}: Retrying (attempt ${job.retry_count}/${job.max_retries})...`;
+        }
+      } catch (e) {
+        console.warn('Error checking job:', e);
+      }
+    }, 1000);
   }
 
   // Run Pipeline

@@ -29,6 +29,10 @@
       </div>
 
       <div class="header-status">
+        <div class="status-pill" id="cacheStatusPill" title="Redis Cache Status">
+          <span class="status-dot" style="background-color: #10b981;"></span>
+          <span id="cacheStatusText">Cache Active</span>
+        </div>
         <div class="status-pill" id="engineStatusPill">
           <span class="status-dot"></span>
           <span id="engineStatusText">Offline Deterministic Mode</span>
@@ -127,6 +131,28 @@
           </div>
         </div>
 
+        <!-- Active Job Banner -->
+        <div id="jobStatusBanner" class="alert-banner alert-info" style="display:none;">
+          <div class="alert-content">
+            <div class="spinner-small" id="jobSpinner"></div>
+            <span id="jobBannerText">Processing background job...</span>
+          </div>
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" id="jobProgressBar" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <!-- Duplicate Notice Banner -->
+        <div id="duplicateAlertBanner" class="alert-banner alert-success" style="display:none;">
+          <div class="alert-content">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+              <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+            <span id="duplicateAlertText">Duplicate document detected: SHA-256 matched. Existing facts reused without re-processing.</span>
+          </div>
+        </div>
+
         <!-- Document List -->
         <div class="section-block">
           <h3 class="section-title">Uploaded Documents</h3>
@@ -138,6 +164,7 @@
                   <th>Pages</th>
                   <th>File Size</th>
                   <th>SHA-256 Fingerprint</th>
+                  <th>Malware Scan</th>
                   <th>Status</th>
                 </tr>
               </thead>

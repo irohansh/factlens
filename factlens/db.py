@@ -13,7 +13,11 @@ from factlens.schemas import (
     ExtractionFailure,
     RelationshipType,
     DifferenceType,
-    FailureType
+    FailureType,
+    JobRecord,
+    JobStatus,
+    ScanStatus,
+    utc_now_iso
 )
 
 def get_db_path() -> Path:
@@ -35,7 +39,7 @@ def get_db_cursor():
         conn.close()
 
 def init_db() -> None:
-    """Initializes SQLite tables with parameterized DDL."""
+    """Initializes SQLite tables with parameterized DDL and migration checks."""
     with get_db_cursor() as cur:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS documents (
@@ -47,9 +51,45 @@ def init_db() -> None:
                 sha256_hash TEXT NOT NULL,
                 upload_timestamp TEXT NOT NULL,
                 status TEXT NOT NULL,
+                scan_status TEXT DEFAULT 'pending',
+                scan_result TEXT,
+                scan_timestamp TEXT,
                 error_message TEXT
             )
         """)
+        
+        # Enforce unique index at database level for content-based duplicate detection
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_sha256 ON documents(sha256_hash);
+        """)
+
+        # Migration helper for documents table if created under older schema
+        cur.execute("PRAGMA table_info(documents)")
+        existing_cols = {row["name"] for row in cur.fetchall()}
+        if "scan_status" not in existing_cols:
+            cur.execute("ALTER TABLE documents ADD COLUMN scan_status TEXT DEFAULT 'pending'")
+        if "scan_result" not in existing_cols:
+            cur.execute("ALTER TABLE documents ADD COLUMN scan_result TEXT")
+        if "scan_timestamp" not in existing_cols:
+            cur.execute("ALTER TABLE documents ADD COLUMN scan_timestamp TEXT")
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS jobs (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                progress REAL DEFAULT 0.0,
+                retry_count INTEGER DEFAULT 0,
+                max_retries INTEGER DEFAULT 3,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+            );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_document_id ON jobs(document_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);")
+
         
         cur.execute("""
             CREATE TABLE IF NOT EXISTS document_pages (
@@ -122,11 +162,12 @@ def save_document(doc: DocumentMetadata) -> None:
     with get_db_cursor() as cur:
         cur.execute("""
             INSERT OR REPLACE INTO documents 
-            (id, filename, original_name, file_size_bytes, page_count, sha256_hash, upload_timestamp, status, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, filename, original_name, file_size_bytes, page_count, sha256_hash, upload_timestamp, status, scan_status, scan_result, scan_timestamp, error_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             doc.id, doc.filename, doc.original_name, doc.file_size_bytes,
-            doc.page_count, doc.sha256_hash, doc.upload_timestamp, doc.status, doc.error_message
+            doc.page_count, doc.sha256_hash, doc.upload_timestamp, doc.status,
+            doc.scan_status, doc.scan_result, doc.scan_timestamp, doc.error_message
         ))
 
 def get_document(doc_id: str) -> Optional[DocumentMetadata]:
@@ -136,6 +177,55 @@ def get_document(doc_id: str) -> Optional[DocumentMetadata]:
         if not row:
             return None
         return DocumentMetadata(**dict(row))
+
+def get_document_by_hash(sha256_hash: str) -> Optional[DocumentMetadata]:
+    """Retrieves document by its content SHA256 hash across all filenames."""
+    with get_db_cursor() as cur:
+        cur.execute("SELECT * FROM documents WHERE sha256_hash = ?", (sha256_hash,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return DocumentMetadata(**dict(row))
+
+def create_document_atomic(doc: DocumentMetadata) -> tuple[bool, DocumentMetadata]:
+    """
+    Atomically inserts document enforcing database-level uniqueness on sha256_hash.
+    Returns:
+        (True, doc) if inserted cleanly as new document.
+        (False, existing_doc) if duplicate hash was detected (handles race conditions safely).
+    """
+    try:
+        with get_db_cursor() as cur:
+            cur.execute("""
+                INSERT INTO documents 
+                (id, filename, original_name, file_size_bytes, page_count, sha256_hash, upload_timestamp, status, scan_status, scan_result, scan_timestamp, error_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                doc.id, doc.filename, doc.original_name, doc.file_size_bytes,
+                doc.page_count, doc.sha256_hash, doc.upload_timestamp, doc.status,
+                doc.scan_status, doc.scan_result, doc.scan_timestamp, doc.error_message
+            ))
+        return True, doc
+    except sqlite3.IntegrityError:
+        # Unique constraint on sha256_hash fired
+        existing = get_document_by_hash(doc.sha256_hash)
+        if existing:
+            return False, existing
+        raise
+
+def update_document_scan(
+    doc_id: str,
+    scan_status: str,
+    scan_result: Optional[str] = None,
+    scan_timestamp: Optional[str] = None
+) -> None:
+    ts = scan_timestamp or utc_now_iso()
+    with get_db_cursor() as cur:
+        cur.execute("""
+            UPDATE documents 
+            SET scan_status = ?, scan_result = ?, scan_timestamp = ? 
+            WHERE id = ?
+        """, (scan_status, scan_result, ts, doc_id))
 
 def list_documents() -> List[DocumentMetadata]:
     with get_db_cursor() as cur:
@@ -153,6 +243,79 @@ def update_document_status(doc_id: str, status: str, page_count: Optional[int] =
             cur.execute("""
                 UPDATE documents SET status = ?, error_message = ? WHERE id = ?
             """, (status, error, doc_id))
+
+# Job Queue Methods
+def create_job(job: JobRecord) -> JobRecord:
+    with get_db_cursor() as cur:
+        cur.execute("""
+            INSERT OR REPLACE INTO jobs 
+            (id, document_id, status, progress, retry_count, max_retries, error_message, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            job.id, job.document_id, job.status.value if isinstance(job.status, JobStatus) else job.status,
+            job.progress, job.retry_count, job.max_retries, job.error_message,
+            job.created_at, job.updated_at
+        ))
+    return job
+
+def get_job(job_id: str) -> Optional[JobRecord]:
+    with get_db_cursor() as cur:
+        cur.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return JobRecord(**dict(row))
+
+def get_active_job_by_doc_id(doc_id: str) -> Optional[JobRecord]:
+    """Finds active job ('queued' or 'processing') for a document to prevent duplicate jobs."""
+    with get_db_cursor() as cur:
+        cur.execute("""
+            SELECT * FROM jobs 
+            WHERE document_id = ? AND status IN ('queued', 'processing')
+            ORDER BY created_at DESC LIMIT 1
+        """, (doc_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return JobRecord(**dict(row))
+
+def update_job_status(
+    job_id: str,
+    status: JobStatus | str,
+    progress: Optional[float] = None,
+    error_message: Optional[str] = None,
+    retry_count: Optional[int] = None
+) -> None:
+    status_val = status.value if isinstance(status, JobStatus) else status
+    now = utc_now_iso()
+    with get_db_cursor() as cur:
+        updates = ["status = ?", "updated_at = ?"]
+        params = [status_val, now]
+        if progress is not None:
+            updates.append("progress = ?")
+            params.append(progress)
+        if error_message is not None:
+            updates.append("error_message = ?")
+            params.append(error_message)
+        if retry_count is not None:
+            updates.append("retry_count = ?")
+            params.append(retry_count)
+        params.append(job_id)
+
+        cur.execute(f"UPDATE jobs SET {', '.join(updates)} WHERE id = ?", params)
+
+def list_jobs(status: Optional[str] = None) -> List[JobRecord]:
+    query = "SELECT * FROM jobs"
+    params = []
+    if status:
+        query += " WHERE status = ?"
+        params.append(status)
+    query += " ORDER BY created_at DESC"
+    with get_db_cursor() as cur:
+        cur.execute(query, params)
+        rows = cur.fetchall()
+        return [JobRecord(**dict(r)) for r in rows]
+
 
 def save_pages(pages: List[DocumentPage]) -> None:
     with get_db_cursor() as cur:

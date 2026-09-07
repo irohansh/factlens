@@ -28,6 +28,30 @@ class FailureType(str, Enum):
     TABLE_MISALIGNMENT = "table_misalignment"
     LAYOUT_DISRUPTION = "layout_disruption"
 
+class ScanStatus(str, Enum):
+    CLEAN = "clean"
+    INFECTED = "infected"
+    MOCK_SCANNED = "mock_scanned"
+    ERROR = "error"
+    SKIPPED = "skipped"
+
+class JobStatus(str, Enum):
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+class JobRecord(BaseModel):
+    id: str = Field(default_factory=lambda: f"job_{uuid.uuid4().hex[:12]}")
+    document_id: str
+    status: JobStatus = JobStatus.QUEUED
+    progress: float = 0.0
+    retry_count: int = 0
+    max_retries: int = 3
+    error_message: Optional[str] = None
+    created_at: str = Field(default_factory=utc_now_iso)
+    updated_at: str = Field(default_factory=utc_now_iso)
+
 class DocumentMetadata(BaseModel):
     id: str = Field(default_factory=lambda: f"doc_{uuid.uuid4().hex[:12]}")
     filename: str
@@ -36,13 +60,23 @@ class DocumentMetadata(BaseModel):
     page_count: int
     sha256_hash: str
     upload_timestamp: str = Field(default_factory=utc_now_iso)
-    status: str = "uploaded"  # uploaded, processing, processed, failed
+    status: str = "uploaded"  # uploaded, queued, processing, processed, failed
+    scan_status: str = "pending"  # clean, infected, mock_scanned, error, skipped, pending
+    scan_result: Optional[str] = None
+    scan_timestamp: Optional[str] = None
     error_message: Optional[str] = None
+
+class UploadResponseItem(BaseModel):
+    document: DocumentMetadata
+    job_id: Optional[str] = None
+    is_duplicate: bool = False
+    message: str = "Document uploaded successfully"
 
 class DocumentPage(BaseModel):
     id: str = Field(default_factory=lambda: f"page_{uuid.uuid4().hex[:12]}")
     document_id: str
     page_number: int  # 1-indexed
+
     text: str
     char_count: int
 

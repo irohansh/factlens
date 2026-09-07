@@ -9,4 +9,6 @@ python-multipart>=0.0.9
 pytest>=8.0.0
 pytest-asyncio>=0.24.0
 fonttools>=4.50.0
+redis>=5.0.0
+
 
