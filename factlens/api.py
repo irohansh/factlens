@@ -117,6 +117,9 @@ async def upload_pdfs(files: List[UploadFile] = File(...)):
             # 4. Extract pages & check page limit
             pages = extract_pdf_pages(saved_path, doc_id)
             
+            # 5. Extract facts & failures immediately
+            facts, failures = fact_extractor.extract_document(pages, safe_name)
+
             doc_meta = DocumentMetadata(
                 id=doc_id,
                 filename=safe_name,
@@ -124,13 +127,24 @@ async def upload_pdfs(files: List[UploadFile] = File(...)):
                 file_size_bytes=len(content),
                 page_count=len(pages),
                 sha256_hash=sha256,
-                status="uploaded"
+                status="processed"
             )
 
-            # 5. Persist document & pages to DB
+            # 6. Persist document, pages, facts, and failures to DB
             db.save_document(doc_meta)
             db.save_pages(pages)
+            if facts:
+                db.save_facts(facts)
+            if failures:
+                db.save_failures(failures)
+
+            # 7. Incremental reconciliation against all facts
+            all_facts = db.get_facts()
+            comparisons = cross_doc_reconciler.reconcile_facts(all_facts)
+            db.save_comparisons(comparisons)
+
             uploaded_docs.append(doc_meta)
+
 
         except SecurityError as se:
             raise HTTPException(status_code=400, detail=str(se))

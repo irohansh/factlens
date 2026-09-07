@@ -109,7 +109,21 @@ class DeterministicExtractor:
             return "IMF"
         if "economic-survey" in d or "survey" in d or "ministry of finance" in t:
             return "India"
-        return "Unknown"
+
+        # Check for first substantial title line in sample_text
+        for line in sample_text.splitlines():
+            clean_l = line.strip().replace("\t", " ")
+            if len(clean_l) > 6 and not any(k in clean_l.lower() for k in ["page", "chapter", "table of contents", "copyright", "confidential"]):
+                clean_l = re.sub(r'^(?:module\s*\d+\s*[-—:]\s*|chapter\s*\d+\s*[-—:]\s*|#+\s*)', '', clean_l, flags=re.IGNORECASE).strip()
+                if len(clean_l) >= 4:
+                    return clean_l[:40]
+
+        # Fallback to sanitized filename
+        base = Path(doc_name).stem
+        base_clean = re.sub(r'^(?:\d+[-_]|module[-_]\d+[-_])', '', base, flags=re.IGNORECASE)
+        base_clean = base_clean.replace("-", " ").replace("_", " ").title()
+        return base_clean[:40] if base_clean else "General Document"
+
 
     def extract_from_card_layout(
         self, page: DocumentPage, doc_name: str, default_entity: str
@@ -335,16 +349,103 @@ class DeterministicExtractor:
                 )
                 facts.append(fact)
 
+        # Open-ended extraction pass for arbitrary documents (sustainability, energy, tech, general)
+        for sent in sentences:
+            sent_str = sent.strip()
+            if len(sent_str) < 15:
+                continue
+
+            # Check if this sentence already produced a fact from specific PATTERNS
+            already_matched = any(f.evidence_text in sent_str or sent_str[:60] in f.evidence_text for f in facts)
+            if already_matched:
+                continue
+
+            # Open Pattern 1: [Value with unit] followed by [Metric phrase] (e.g. '100% renewable electricity by 2035')
+            p1 = r'(?P<val>[₹$€£]?\s*\(?[\d,.]+\)?\s*(?:%|per cent|percent|GW|MW|kW|kWh|MWh|tons?|tonnes?|kg|km|miles|days|years|Cr|crore|Mn|million|Bn|billion|Lakh)?)\s+(?P<metric>[A-Za-z][A-Za-z\s\-/]{2,35}?)(?:\s+(?:by|in|for|as of|city-wide by)\s+(?P<period>\b20\d{2}\b|FY\d{2,4}))'
+            
+            # Open Pattern 2: [Metric phrase] followed by verb/marker and [Value with unit] (e.g. 'clean energy target: 100%', 'emissions reduced by 25%')
+            p2 = r'(?P<metric>[A-Z][A-Za-z0-9\s\-/]{2,35}?)\s*(?:is|was|of|reached|stood at|increased by|decreased by|moderated to|grew by|targeting|targets|targeted at|estimated at|amounted to|totaled|totalled|total of|equals?|[:=–-])\s*(?P<val>[₹$€£]?\s*\(?[\d,.]+\)?\s*(?:%|per cent|percent|GW|MW|kW|kWh|MWh|tons?|tonnes?|kg|km|miles|days|years|Cr|crore|Mn|million|Bn|billion|Lakh)\b)'
+
+            for open_pat in (p1, p2):
+                for m in re.finditer(open_pat, sent_str, re.IGNORECASE):
+                    raw_metric = m.group('metric').strip().strip(':-– ')
+                    raw_val = m.group('val').strip()
+                    if len(raw_metric) < 3 or raw_metric.lower() in ('the', 'and', 'for', 'with', 'from', 'this', 'that', 'how', 'when', 'both'):
+                        continue
+                    val_num, unit = normalize_number_and_unit(raw_val)
+                    if val_num is None:
+                        continue
+                    if unit == 'count' and val_num < 10:
+                        continue
+
+                    period_str = m.group('period') if 'period' in m.groupdict() and m.group('period') else None
+                    if not period_str:
+                        m_year = re.search(r'\b(20\d{2}|19\d{2})\b', sent_str)
+                        if m_year:
+                            period_str = m_year.group(0)
+
+                    p_start, p_end, as_of = normalize_period(period_str)
+
+                    is_grounded, conf, ctx = verify_evidence_in_page(sent_str[:120], page.text)
+                    if not is_grounded:
+                        quote = sent_str[max(0, m.start() - 30): min(len(sent_str), m.end() + 30)].strip()
+                        is_grounded, conf, ctx = verify_evidence_in_page(quote, page.text)
+                    else:
+                        quote = sent_str[:120]
+
+                    if is_grounded:
+                        clean_metric_title = re.sub(r'\s+', ' ', raw_metric).strip().title()
+                        facts.append(
+                            Fact(
+                                document_id=page.document_id,
+                                document_name=doc_name,
+                                page_number=page.page_number,
+                                entity=default_entity,
+                                metric=clean_metric_title,
+                                value_raw=raw_val,
+                                value_numeric=val_num,
+                                unit=unit,
+                                period=period_str,
+                                period_start=p_start,
+                                period_end=p_end,
+                                as_of_date=as_of,
+                                scope=None,
+                                evidence_text=quote,
+                                evidence_context=ctx,
+                                confidence=conf,
+                                extraction_method="deterministic_open"
+                            )
+                        )
+
+
         return facts, failures
 
     def extract_from_page(
-        self, page: DocumentPage, doc_name: str
+        self, page: DocumentPage, doc_name: str, default_entity: Optional[str] = None
     ) -> Tuple[List[Fact], List[ExtractionFailure]]:
-        entity = self.infer_document_entity(doc_name, page.text)
+        entity = default_entity or self.infer_document_entity(doc_name, page.text)
         card_facts = self.extract_from_card_layout(page, doc_name, entity)
         sent_facts, failures = self.extract_from_sentences(page, doc_name, entity)
+
         
         all_facts = card_facts + sent_facts
+
+        # If page has substantial text but zero facts found, log informative failure audit
+        if not all_facts and len(page.text.strip()) > 150:
+            failures.append(
+                ExtractionFailure(
+                    document_id=page.document_id,
+                    document_name=doc_name,
+                    page_number=page.page_number,
+                    failure_type=FailureType.PARSE_ERROR,
+                    raw_snippet=page.text.strip()[:140],
+                    explanation=(
+                        f"Page {page.page_number} contains {len(page.text)} characters of descriptive or qualitative text, "
+                        "but no verifiable quantitative or structured metric claims were identified."
+                    )
+                )
+            )
+
         # De-duplicate by metric, raw_val, and page
         unique_facts: List[Fact] = []
         seen = set()
@@ -353,6 +454,7 @@ class DeterministicExtractor:
             if key not in seen:
                 seen.add(key)
                 unique_facts.append(f)
+
                 
         return unique_facts, failures
 
@@ -475,12 +577,15 @@ class FactExtractionService:
         all_failures: List[ExtractionFailure] = []
 
         use_llm = bool(self.llm and not force_deterministic)
+        sample_text = pages[0].text if pages else ""
+        doc_entity = self.deterministic.infer_document_entity(doc_name, sample_text)
 
         for page in pages:
             # Deterministic pass is fast and reliable
-            d_facts, d_failures = self.deterministic.extract_from_page(page, doc_name)
+            d_facts, d_failures = self.deterministic.extract_from_page(page, doc_name, doc_entity)
             all_facts.extend(d_facts)
             all_failures.extend(d_failures)
+
 
             # If LLM is available and page has potential tabular or dense text
             if use_llm and len(page.text) > 200:

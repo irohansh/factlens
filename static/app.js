@@ -245,8 +245,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const err = await res.json();
         throw new Error(err.detail || 'Upload failed');
       }
-      await loadDocuments();
-      dropZone.querySelector('.dropzone-title').innerHTML = `Uploaded successfully! Drag more, or <span class="text-accent">browse</span>`;
+      await loadAllData();
+      dropZone.querySelector('.dropzone-title').innerHTML = `Uploaded & processed! Drag more, or <span class="text-accent">browse</span>`;
+
     } catch (e) {
       alert(`Upload rejected: ${e.message}`);
       dropZone.querySelector('.dropzone-title').innerHTML = `Drag & drop PDF documents here, or <span class="text-accent">browse</span>`;
