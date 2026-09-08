@@ -1,393 +1,304 @@
-# FactLens: Grounded Fact Knowledge Layer
+# FactLens
 
-> **Superjoin VIT 2026 — Engineering Intern Hiring Assignment**  
-> An evidence-grounded Fact Knowledge Layer that ingests unstructured multi-page PDFs, extracts structured numerical and semantic facts, grounds every fact to verifiable page-level evidence, normalizes units and temporal intervals, and reconciles cross-document claims to detect corroborations, genuine contradictions, and context-explained differences.
-
----
-
-## Table of Contents
-1. [Executive Summary](#executive-summary)
-2. [Architecture Overview](#architecture-overview)
-3. [Setup and Run Instructions](#setup-and-run-instructions)
-4. [Video Demo Walkthrough](#video-demo-walkthrough)
-5. [Approach, Architecture & Key Decisions](#approach-architecture--key-decisions)
-6. [Showcase: The Four Required Cases](#showcase-the-four-required-cases)
-7. [Security & Untrusted Input Defenses](#security--untrusted-input-defenses)
-8. [Brownie Points Addressed](#brownie-points-addressed)
-9. [Limitations and Next Steps](#limitations-and-next-steps)
-10. [Additional Notes & Evaluation Guarantee](#additional-notes--evaluation-guarantee)
+**A grounded fact extraction, canonical normalization, and cross-document reconciliation engine for unstructured financial and macroeconomic filings.**
 
 ---
 
-## Executive Summary
+## Overview
 
-Important facts are fragmented across enterprise filings, investor decks, and macroeconomic reports. Stated in different units (Millions vs. Crores), covering different horizons (9-month partial vs. 12-month fiscal), or reflecting statistical data revisions (Advance vs. Provisional estimates), comparing these facts naively leads to false contradictions and hallucinated errors.
+Enterprise filings, investor presentations, and macroeconomic reports frequently present facts using disparate conventions:
+- Different magnitudes and currencies (e.g., Millions vs. Crores, USD vs. INR)
+- Shifting temporal horizons (e.g., 9-month interim vs. full 12-month fiscal periods)
+- Vintage statistical revisions (e.g., Advance Estimates vs. Provisional Actuals)
 
-**FactLens** solves this by establishing a multi-tier knowledge layer:
-- **Dual-Mode Extraction**: Operates 100% offline out-of-the-box using deterministic layout-aware regex and rule extractors (zero API keys needed). Automatically elevates to **Google GenAI (Gemini 2.5 Flash)** when an API key is supplied.
-- **Strict Evidence Grounding**: Rejects ungrounded claims. Every fact links to its exact page number, source quote, and surrounding context window with multi-tier substring verification.
-- **Canonical Normalization**: Standardizes disparate units (Crores, Millions, Billions, Lakhs, percentages) into base scalar quantities and parses fiscal periods (FY24, Q1-Q4, as-of dates, 9-month intervals) into comparable ISO interval bounds.
-- **Cross-Document Reconciliation**: Evaluates multi-document metric pairs to classify relationships as **Corroboration**, **Genuine Contradiction**, or **Contextual Difference** (Unit, Time, Scope, Definition, Revision) with human-readable rationales.
-- **Auditable Failure Logging**: Explicitly logs ungrounded evidence or malformed structures in an `ExtractionFailure` audit log instead of hallucinating or silently ignoring them.
+Naively comparing these statements creates false contradictions and hallucinated discrepancies.
+
+**FactLens** solves this by providing a structured knowledge pipeline:
+1. **Multi-Page Ingestion**: Extracts digital text, layout geometries, and table contents from PDF filings.
+2. **Dual-Mode Extraction Engine**: Operates fully offline using deterministic layout-aware rules, or with Google Gemini (`gemini-2.5-flash`) when an API key is configured.
+3. **Strict Evidence Grounding**: Every extracted fact is anchored to exact page numbers and verbatim source quotes, verified through multi-tier substring validation.
+4. **Canonical Normalization**: Standardizes non-standard currencies, Indian and Western scale units (Crores, Lakhs, Millions, Billions), and fiscal time periods into comparable ISO interval bounds.
+5. **Cross-Document Reconciliation**: Evaluates metric pairs across documents to classify relationships as **Corroborations**, **Genuine Contradictions**, or **Contextual Differences** (Unit, Time, Scope, Definition, or Revision).
+6. **Failure & Audit Logging**: Ungrounded or ambiguous assertions are captured in an audit trail rather than silently dropped or hallucinated.
 
 ---
 
-## Architecture Overview
+## Architecture
 
 ```
-                          ┌────────────────────────┐
-                          │   PDF Document Upload  │
-                          │   (Multi-file upload)  │
-                          └───────────┬────────────┘
-                                      │
-                                      ▼
-                        ┌───────────────────────────┐
-                        │ Security & Input Defense  │
-                        │ - Magic Byte Check (%PDF-)│
-                        │ - MIME & Size Limits      │
-                        │ - Path Traversal Sanitize │
-                        └─────────────┬─────────────┘
-                                      │
-                                      ▼
-                        ┌───────────────────────────┐
-                        │   High-Fidelity Parser    │
-                        │ - Multi-page Extraction   │
-                        │ - Layout & Table Bounds   │
-                        │ - Character Offset Map    │
-                        └─────────────┬─────────────┘
-                                      │
-                                      ▼
-               ┌─────────────────────────────────────────────┐
-               │          Dual-Mode Extraction Engine        │
-               │                                             │
-               │  [Mode A: Deterministic Engine]             │
-               │  - Rule & layout-aware regex                │
-               │  - Zero-cost, 100% offline                  │
-               │                                             │
-               │  [Mode B: LLM Augmented Engine]             │
-               │  - Google GenAI (Gemini 2.5 Flash)          │
-               │  - Pydantic structured output schema        │
-               └──────────────────────┬──────────────────────┘
-                                      │
-                                      ▼
-                        ┌───────────────────────────┐
-                        │   Evidence Grounding      │
-                        │ - Exact substring check   │
-                        │ - Context snippet window  │
-                        │ - Confidence penalizer    │
-                        └─────────────┬─────────────┘
-                                      │
-                                      ▼
-                        ┌───────────────────────────┐
-                        │    Normalization Layer    │
-                        │ - Magnitude (Cr, Mn, Bn)  │
-                        │ - Temporal (FY, Q, As-of) │
-                        │ - Metric & Entity Alias   │
-                        └─────────────┬─────────────┘
-                                      │
-                                      ▼
-                        ┌───────────────────────────┐
-                        │ Cross-Document Reconciler │
-                        │ - Corroboration Detection │
-                        │ - Genuine Contradictions  │
-                        │ - Contextual Differences  │
-                        └─────────────┬─────────────┘
-                                      │
-                                      ▼
-          ┌───────────────────────────────────────────────────────┐
-          │                  Storage & Interface                  │
-          │  - SQLite Database with Parameterized Queries         │
-          │  - FastAPI REST Backend                               │
-          │  - Glassmorphic, Modern Interactive UI (Vanilla ES6) │
-          └───────────────────────────────────────────────────────┘
+                       ┌────────────────────────┐
+                       │   PDF Document Upload  │
+                       │   (Multi-file upload)  │
+                       └───────────┬────────────┘
+                                   │
+                                   ▼
+                     ┌───────────────────────────┐
+                     │ Security & Input Defense  │
+                     │ - Magic byte check (%PDF-)│
+                     │ - Size & page count limit │
+                     │ - Malware / ClamAV filter │
+                     └─────────────┬─────────────┘
+                                   │
+                                   ▼
+                     ┌───────────────────────────┐
+                     │    PDF Document Parser    │
+                     │ - Layout-aware extraction │
+                     │ - Page & coordinate maps  │
+                     │ - Table boundary parsing  │
+                     └─────────────┬─────────────┘
+                                   │
+                                   ▼
+            ┌─────────────────────────────────────────────┐
+            │          Dual-Mode Extraction Engine        │
+            │                                             │
+            │  [Deterministic Rule Engine]                │
+            │  - Layout-aware regex & table parsing       │
+            │  - Fully offline, zero external calls       │
+            │                                             │
+            │  [LLM-Augmented Engine (Optional)]          │
+            │  - Google Gemini 2.5 Flash                  │
+            │  - Pydantic structured output schema        │
+            └──────────────────────┬──────────────────────┘
+                                   │
+                                   ▼
+                     ┌───────────────────────────┐
+                     │    Evidence Grounding     │
+                     │ - Verbatim substring match│
+                     │ - Context snippet window  │
+                     │ - Multi-tier verification │
+                     └─────────────┬─────────────┘
+                                   │
+                                   ▼
+                     ┌───────────────────────────┐
+                     │    Normalization Layer    │
+                     │ - Scalar unit conversion  │
+                     │ - ISO temporal intervals  │
+                     │ - Canonical metric aliases│
+                     └─────────────┬─────────────┘
+                                   │
+                                   ▼
+                     ┌───────────────────────────┐
+                     │ Cross-Document Reconciler │
+                     │ - Corroboration detection │
+                     │ - Genuine contradictions  │
+                     │ - Contextual differences  │
+                     └─────────────┬─────────────┘
+                                   │
+                                   ▼
+       ┌───────────────────────────────────────────────────────┐
+       │                  Storage & Interface                  │
+       │  - SQLite Database (WAL mode, parameterized queries)  │
+       │  - Optional Redis Cache (In-memory TTL fallback)      │
+       │  - FastAPI REST Backend                               │
+       │  - Interactive Web Dashboard (Vanilla HTML/CSS/JS)    │
+       └───────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Setup and Run Instructions
+## Core Capabilities
+
+### 1. Evidence Grounding & Verification
+Every fact must be strictly grounded in the source text:
+- **Exact Quote Matching**: Verifies the extracted `evidence_text` directly against the raw text of the specified page.
+- **Multi-Tier Fallback**: Performs verbatim substring matching, normalized whitespace matching, and token overlap analysis.
+- **Audit Logging**: Any claim that cannot be verified on the page is flagged as an `UNGROUNDED_EVIDENCE` failure in the audit log.
+
+### 2. Canonical Normalization
+- **Currency & Scale Units**: Normalizes Indian numbering systems (`Crore`, `Lakh`) and Western notations (`Million`, `Billion`) to base numeric values:
+  - `₹81,415 Mn` $\rightarrow$ `81,415,000,000 INR`
+  - `₹8,142 Cr` $\rightarrow$ `81,420,000,000 INR`
+- **Temporal Alignment**: Translates fiscal periods and relative dates into ISO 8601 date intervals:
+  - `FY24` $\rightarrow$ `[2023-04-01, 2024-03-31]`
+  - `9M ended Dec 31, 2021` $\rightarrow$ `[2021-04-01, 2021-12-31]`
+  - `As of March 31, 2024` $\rightarrow$ `[2024-03-31, 2024-03-31]`
+- **Metric Aliasing**: Maps lexical variants to canonical ontology keys (e.g., `Revenue from operations` and `Revenue from services` map to `revenue`).
+
+### 3. Cross-Document Reconciliation
+When facts share the same canonical entity and metric, FactLens determines their relationship:
+
+| Classification | Condition | Example |
+| :--- | :--- | :--- |
+| **CORROBORATION** | Equivalent normalized values over the same temporal period across separate documents. | Parcel volume reported as `740 Mn` in Annual Report and `740 Mn` in Earnings Deck. |
+| **CONTEXTUAL_DIFFERENCE (Unit)** | Discrepancies resolved once units are converted to common base scales. | `₹81,415 Mn` vs. `₹8,142 Cr` (0.006% rounding equivalence). |
+| **CONTEXTUAL_DIFFERENCE (Temporal)** | Discrepancies resulting from non-overlapping or expanded measurement periods. | Network reach at `17,488 PIN codes` (Dec 2021) vs. `18,793 PIN codes` (Mar 2024). |
+| **CONTEXTUAL_DIFFERENCE (Scope)** | Discrepancies explained by partial vs. full reporting intervals. | Headline inflation at `4.9%` (9-month interim) vs. `4.6%` (full 12-month fiscal year). |
+| **GENUINE_CONTRADICTION** | Conflicting figures for identical metrics and time horizons without scope justification. | India FY25 Real GDP Growth reported as `6.4%` (First Advance Estimates) vs. `6.5%` (Provisional Actuals / RBI). |
+
+---
+
+## Production Features
+
+- **Asynchronous Background Processing**: File uploads are accepted immediately (`202 Accepted`), with parsing, extraction, and reconciliation executing in decoupled background workers with progress tracking and automatic retry logic.
+- **Content-Based Deduplication**: Uploaded documents are fingerprinted via SHA-256 hashes. Duplicate files (even with different filenames) reuse existing processing artifacts immediately.
+- **Resilient Caching**: Redis-backed cache layer for document facts and reconciliation results, with an automatic, zero-crash fallback to in-memory TTL caching when Redis is unavailable.
+- **Security & Payload Defense**:
+  - Magic byte validation (`%PDF-`) and MIME verification
+  - Configurable page count and file size limits
+  - Path traversal sanitization
+  - ClamAV antivirus stream scanning with safe fail-closed behavior and development mock modes
+  - Prompt injection boundary isolation for LLM payloads
+
+---
+
+## Getting Started
 
 ### Prerequisites
-- Python 3.10 to Python 3.14
+- Python 3.10 to 3.14
 - Git
 
-### 1. Clone & Set Up Environment
+### Installation
+
 ```bash
-git clone <your-repository-url> factlens
+# 1. Clone repository
+git clone https://github.com/irohansh/factlens.git
 cd factlens
 
-# Create virtual environment
+# 2. Set up virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies
+# 3. Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Configure Environment (Optional)
-FactLens runs in **Offline Deterministic Mode** with zero external setup or credentials required.
+### Configuration
 
-If you wish to test with Gemini 2.5 Flash LLM augmentation:
+FactLens runs out of the box in **Offline Deterministic Mode** with zero configuration.
+
+To enable optional LLM-assisted extraction or configure cache and scanner settings, copy the example environment file:
+
 ```bash
 cp .env.example .env
-# Edit .env and supply your GEMINI_API_KEY
 ```
-*(You can also dynamically set or toggle your Gemini API key inside the web UI under Settings at any time.)*
 
-### 3. Start the Application
+Key environment variables in `.env`:
+
+```ini
+# Optional: Google Gemini API Key for LLM extraction
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Cache configuration (redis or memory)
+CACHE_BACKEND=memory
+REDIS_URL=redis://localhost:6379/0
+
+# Malware scanner mode (dev_mock, clamav, or disabled)
+SCANNER_MODE=dev_mock
+CLAMAV_HOST=localhost
+CLAMAV_PORT=3310
+```
+
+### Running the Server
+
 ```bash
-# Start the FastAPI server with live reload
+# Start FastAPI application with live reload
 uvicorn factlens.api:app --reload --host 127.0.0.1 --port 8000
 ```
-Open your browser and navigate to:
-- **Interactive Web Interface**: [http://localhost:8000](http://localhost:8000)
-- **Interactive OpenAPI Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **API Health Check**: [http://localhost:8000/api/health](http://localhost:8000/api/health)
 
-### 4. Running the Test Suite
+Access the interfaces:
+- **Web Dashboard**: [http://localhost:8000](http://localhost:8000)
+- **Interactive OpenAPI Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Health Endpoint**: [http://localhost:8000/api/health](http://localhost:8000/api/health)
+
+---
+
+## API Reference
+
+### Ingestion & Processing
+
+#### `POST /api/upload`
+Upload one or more PDF files for validation, deduplication, and queued processing.
 ```bash
-# Run all 26 automated unit and integration tests
+curl -X POST "http://localhost:8000/api/upload" \
+  -F "files=@data/samples/delhivery/02-delhivery-annual-report-fy24-excerpt.pdf"
+```
+
+#### `GET /api/jobs/{job_id}`
+Check background processing progress and worker status.
+```bash
+curl "http://localhost:8000/api/jobs/job_123456"
+```
+
+#### `POST /api/process`
+Trigger synchronous extraction and reconciliation on ingested documents.
+```bash
+curl -X POST "http://localhost:8000/api/process"
+```
+
+### Data & Query Endpoints
+
+#### `GET /api/facts`
+Query extracted and grounded facts with optional filters.
+```bash
+# Filter by entity or metric
+curl "http://localhost:8000/api/facts?entity=Delhivery&metric=revenue"
+```
+
+#### `GET /api/comparisons`
+Retrieve cross-document reconciliation pairs.
+```bash
+# Filter by reconciliation classification
+curl "http://localhost:8000/api/comparisons?relationship=GENUINE_CONTRADICTION"
+```
+
+#### `GET /api/failures`
+Inspect ungrounded claims or parsing errors in the audit log.
+```bash
+curl "http://localhost:8000/api/failures"
+```
+
+#### `GET /api/cases`
+Retrieve reference reconciliation case studies across standard test datasets.
+```bash
+curl "http://localhost:8000/api/cases"
+```
+
+---
+
+## Reference Reconciliation Scenarios
+
+The repository includes pre-packaged test documents illustrating common cross-filing patterns:
+
+### 1. Volume Corroboration Across Filings
+- **Metric**: FY24 Express Parcel Volume
+- **Filings**: Delhivery FY24 Annual Report (Page 4) vs. Q4 FY24 Earnings Presentation (Page 6)
+- **Values**: `"740Mn Express parcels shipped"` vs. `"740 Mn Express parcel shipments in FY24"`
+- **Result**: `CORROBORATION` (normalized: `740,000,000` parcels)
+
+### 2. Unit-Explained Difference
+- **Metric**: FY24 Revenue from Services
+- **Filings**: Delhivery FY24 Annual Report (Page 4) vs. Q4 FY24 Earnings Presentation (Page 6)
+- **Values**: `₹81,415 Mn` vs. `₹8,142 Cr`
+- **Result**: `CONTEXTUAL_DIFFERENCE (Unit)` (both normalize to ₹81.42B within standard rounding tolerance)
+
+### 3. Temporal Network Expansion
+- **Metric**: PIN Codes Covered
+- **Filings**: Delhivery 2022 Prospectus (Page 47) vs. FY24 Annual Report (Page 2)
+- **Values**: `17,488 PIN codes` (Dec 31, 2021) vs. `18,793 PIN codes` (Mar 31, 2024)
+- **Result**: `CONTEXTUAL_DIFFERENCE (Temporal)` (2.25-year network expansion)
+
+### 4. Macroeconomic Statistical Revision
+- **Metric**: India FY25 Real GDP Growth Rate
+- **Filings**: India Economic Survey 2024-25 (Page 4) vs. RBI Annual Report 2024-25 (Page 24)
+- **Values**: `6.4%` vs. `6.5%`
+- **Result**: `GENUINE_CONTRADICTION (Revision)` (reflects First Advance Estimates vs. Provisional Actuals)
+
+---
+
+## Testing
+
+FactLens includes an automated test suite verifying security checks, extraction accuracy, unit conversions, temporal intervals, reconciliation logic, and production resilience features.
+
+```bash
+# Run full test suite
 pytest -v
+
+# Run production feature tests (caching, deduplication, job queue, scanner)
+pytest tests/test_production_features.py -v
 ```
 
 ---
 
-## Video Demo Walkthrough
+## License
 
-A comprehensive browser demonstration is recorded showcasing:
-1. **Interactive Showcase Explorer**: One-click deep dive into the four required cases across both Delhivery and India Macro datasets.
-2. **Document Ingestion**: Uploading multi-page PDFs with instant security validation (MIME, magic byte `%PDF-`, page count, and SHA256 checksum).
-3. **Pipeline Processing**: Extraction of numerical facts, evidence grounding, unit normalization, and cross-document reconciliation.
-4. **Fact Matrix**: Filtering and searching across documents by entity, metric family, and period.
-5. **Interactive Evidence Inspector**: Modal display of verbatim quote evidence and contextual window directly from the source document.
-6. **Cross-Doc Reconciliation Matrix**: Color-coded relational badges (`Corroboration`, `Genuine Contradiction`, `Contextual Difference`) with full mathematical and contextual explanations.
-7. **Failure Audit Log**: Inspection of ungrounded or ambiguous claims with diagnostic explanations.
-
----
-
-## Approach, Architecture & Key Decisions
-
-### ADR 001: Dual-Mode Extraction Engine
-- **Context**: Evaluators may run the code in air-gapped or keyless environments. Requiring paid API keys causes friction.
-- **Decision**: Built two interchangeable extraction backends:
-  1. *Mode A (Deterministic)*: Fast, layout-aware regex and card parser capable of extracting complex corporate metrics, volume metrics, and macroeconomic numbers offline.
-  2. *Mode B (Google GenAI Gemini 2.5 Flash)*: Structured Pydantic JSON extraction via the official `google-genai` SDK for complex prose and unstructured multi-hop reasoning.
-- **Result**: Immediate out-of-the-box evaluation without API key hurdles.
-
-### ADR 002: Multi-Tier Substring Evidence Grounding
-- **Context**: LLMs and heuristic extractors frequently suffer from hallucinated numbers or altered quotes.
-- **Decision**: FactLens requires every fact to contain an exact `evidence_text` quote. The `verify_evidence_in_page` engine performs:
-  1. Verbatim character substring search.
-  2. Whitespace-collapsed normalized matching.
-  3. Punctuation-agnostic flexible matching.
-  4. Token overlap ratio analysis.
-  If a quote fails verification, confidence is zeroed and the fact is flagged as an `ExtractionFailure`.
-
-### ADR 003: Canonical Normalization Pipeline
-- **Context**: Corporate reports in India mix Millions (`Mn`) and Crores (`Cr`). 1 Crore = 10 Million. Furthermore, periods mix `"FY24"`, `"2023-24"`, and as-of dates.
-- **Decision**: Implemented `normalizer.py`:
-  - Standardizes currency into base units: `81,415 Mn` -> `81,415,000,000 INR`, `8,142 Cr` -> `81,420,000,000 INR` (0.006% rounding equivalence).
-  - Standardizes time into ISO date intervals: `FY24` -> `period_start: 2023-04-01`, `period_end: 2024-03-31`.
-  - Maps aliased metrics to canonical ontology families (`Revenue from operations` = `Revenue from services`).
-
-### ADR 004: Relational Difference Categorization
-- **Context**: When two numbers disagree, the system must not blindly label it a contradiction.
-- **Decision**: Cross-document reconciler evaluates:
-  - **Identical base value & period** -> `CORROBORATION`
-  - **Identical base value, differing raw units** -> `CONTEXTUAL_DIFFERENCE` (Unit)
-  - **Differing values, differing periods/dates** -> `CONTEXTUAL_DIFFERENCE` (Temporal / Scope)
-  - **Differing values, same period, statistical revision tags** -> `GENUINE_CONTRADICTION` (Revision)
-  - **Differing values, same period, no scope explanation** -> `GENUINE_CONTRADICTION`
-
----
-
-## Showcase: The Four Required Cases
-
-FactLens provides concrete, verified examples for all four cases from the starter datasets:
-
-### Case 1: Corroboration Across Documents
-*A fact corroborated across documents, even if expressed differently.*
-
-#### Dataset 1 (Delhivery): FY24 Express Parcel Shipments (740 Mn)
-- **Document A**: `02-delhivery-annual-report-fy24-excerpt.pdf` (Page 4)  
-  *Quote*: `"740Mn Express parcels shipped"`  
-  *Context*: Corporate Overview card metric.
-- **Document B**: `03-delhivery-q4-fy24-earnings-presentation.pdf` (Page 6)  
-  *Quote*: `"740 Mn Express parcel shipments in FY24"`  
-  *Context*: Slide 5 investor overview.
-- **System Reasoning**: Both documents independently report total FY24 parcel volume of 740 Million units. Normalized value: `740,000,000`. Classification: **CORROBORATION**.
-
-#### Dataset 2 (India Macro): FY24 Headline CPI Inflation (5.4%)
-- **Document A**: `01-india-economic-survey-2024-25-excerpt.pdf` (Page 28)  
-  *Quote*: `"Retail headline inflation, as measured by the Consumer Price Index (CPI), has softened from 5.4 per cent in FY24"`
-- **Document B**: `03-imf-india-2025-article-iv-excerpt.pdf` (Page 44, Table 1)  
-  *Quote*: `"Consumer prices - Combined: 2023/24 = 5.4%"`
-- **Document C**: `02-rbi-annual-report-2024-25-excerpt.pdf`: 5.4%.
-- **System Reasoning**: Independent corroboration of India's annual inflation rate across sovereign economic survey and international multilateral surveillance. Normalized value: `5.4%`. Classification: **CORROBORATION**.
-
----
-
-### Case 2: Genuine Contradiction
-*A genuine or likely contradiction (or statistical revision contradiction).*
-
-#### India Macro: FY25 Real GDP Growth Rate (6.4% vs 6.5%)
-- **Document A**: `01-india-economic-survey-2024-25-excerpt.pdf` (Page 4)  
-  *Quote*: `"As per the first advance estimates of national accounts, India’s real GDP is estimated to grow by 6.4 per cent in FY25."`  
-  *Scope*: First Advance Estimates (FAE) by MoSPI (Jan 2025).
-- **Document B**: `02-rbi-annual-report-2024-25-excerpt.pdf` (Page 24, Table II.2.1)  
-  *Quote*: `"ECONOMIC REVIEW ... quarterly trajectory, real GDP ... 2024-25: 6.5 per cent"`  
-  *Scope*: Provisional Estimates / Central Bank Assessment (May 2025).
-- **Document C**: `03-imf-india-2025-article-iv-excerpt.pdf` (Page 44): `"2024/25 Real GDP Growth: 6.5%"`.
-- **System Reasoning**: Both documents claim to report India's FY25 real GDP growth rate for the identical fiscal year (`2024-04-01` to `2025-03-31`), but arrive at contradictory figures (6.4% vs 6.5%). FactLens identifies this as a **Data Vintage Revision Contradiction**: the Economic Survey was published using early First Advance Estimates, while RBI and IMF incorporate later provisional revisions. Classification: **GENUINE_CONTRADICTION** (Revision).
-
----
-
-### Case 3: Apparent Contradiction Explained by Context
-*An apparent contradiction explained by context, such as time, scope, or units.*
-
-#### Subcase 3A (Unit Conversion): Delhivery FY24 Revenue (₹81,415 Mn vs ₹8,142 Cr)
-- **Document A**: `02-delhivery-annual-report-fy24-excerpt.pdf` (Page 4)  
-  *Quote*: `"₹81,415Mn Revenue from services"`
-- **Document B**: `03-delhivery-q4-fy24-earnings-presentation.pdf` (Page 6)  
-  *Quote*: `"₹8,142 Cr FY24 revenue from services"`
-- **Context & Reasoning**: Naive string matching sees 81,415 vs 8,142 and flags a 10x discrepancy. FactLens normalizes both to base currency INR:
-  - 81,415 Million INR = ₹81,415,000,000
-  - 8,142 Crore INR = ₹81,420,000,000 (1 Cr = 10 Mn)
-  - Discrepancy is $0.006\%$, accounted for by standard financial rounding. Classification: **CONTEXTUAL_DIFFERENCE** (Unit).
-
-#### Subcase 3B (Temporal Expansion): Delhivery PIN Codes Serviced (17,488 vs 18,793)
-- **Document A**: `01-delhivery-prospectus-2022-excerpt.pdf` (Page 47)  
-  *Quote*: `"serviced 17,488 PIN codes for the nine months period ended December 31, 2021"`
-- **Document B**: `02-delhivery-annual-report-fy24-excerpt.pdf` (Page 2)  
-  *Quote*: `"18,793 Pin codes covered As of March 31, 2024"`
-- **Context & Reasoning**: Over 2.25 years of operational network expansion post-IPO, PIN code reach expanded by 1,305 PIN codes. The denominator in India remains constant at ~19,300 PIN codes across both documents. Classification: **CONTEXTUAL_DIFFERENCE** (Temporal).
-
-#### Subcase 3C (Reporting Scope): India FY25 CPI Inflation (4.9% vs 4.6%)
-- **Document A**: `01-india-economic-survey-2024-25-excerpt.pdf` (Page 28)  
-  *Quote*: `"has softened from 5.4 per cent in FY24 to 4.9 per cent in April – December 2024."`  
-  *Scope*: 9-Month Partial Period (April to December 2024).
-- **Document B**: `02-rbi-annual-report-2024-25-excerpt.pdf` (Page 9)  
-  *Quote*: `"Headline inflation moderated to an average of 4.6 per cent in 2024-25"`  
-  *Scope*: Full 12-Month Fiscal Year 2024-25.
-- **Context & Reasoning**: 4.9% represents inflation during the first 9 months of the fiscal year, while 4.6% represents the full 12-month annual average after Q4 food price moderation. Classification: **CONTEXTUAL_DIFFERENCE** (Scope).
-
-#### Subcase 3D (Corporate Identity Status): Delhivery CIN Transition
-- **Document A**: `01-delhivery-prospectus-2022-excerpt.pdf` (Page 1)  
-  *CIN*: `U63090DL2011PLC221234` (`U` = Unlisted Public Company).
-- **Document B**: `02-delhivery-annual-report-fy24-excerpt.pdf` (Page 50)  
-  *CIN*: `L63090DL2011PLC221234` (`L` = Listed Public Company).
-- **Context & Reasoning**: The first character transitioned from `U` to `L` following Delhivery's successful IPO on BSE and NSE. Classification: **CONTEXTUAL_DIFFERENCE** (Definition).
-
----
-
-### Case 4: Extraction or Reasoning Failure Handled
-*An extraction or reasoning failure found and how it was handled or would be improved.*
-
-#### 1. Footnote & Superscript Digit Concatenation
-- **Problem**: In financial and statistical tables, numbers often have attached footnote superscripts (e.g. `₹8,142 Cr(1)` or `5.4%^17`). Naive regex or LLM OCR tokenizers concatenate these characters, yielding distorted numbers like `81,421` or `5.417`.
-- **FactLens Handling**: Implemented regex sanitizers in `extractor.py` that identify and strip trailing parenthetical numbers `(\(\d+\)|\^\d+)` prior to scalar conversion, while preserving the full quote in `evidence_text`.
-
-#### 2. Multi-Column Layout Reading Order Disruption
-- **Problem**: In 2-column documents like the RBI Annual Report and Economic Survey, basic line-by-line text extractors read horizontally across both columns, interleaving sentences into nonsense text (e.g. merging left-column GDP text with right-column agricultural data).
-- **FactLens Handling**: Employed column-boundary sorting and layout chunking. If layout continuity is corrupted, the quote fails strict substring verification, preventing corrupted facts from entering the knowledge layer.
-
-#### 3. Ungrounded Extraction Failure Logging
-- **Problem**: If an extraction model proposes a fact whose evidence quote cannot be verified verbatim on that page in the PDF, standard systems either silently hallucinate or discard the error without trace.
-- **FactLens Handling**: Recorded directly into the database as an `ExtractionFailure` record with `failure_type=UNGROUNDED_EVIDENCE`, the raw snippet, and a diagnostic explanation, visible in the UI's **Failures & Audit** tab.
-
----
-
-## Security & Untrusted Input Defenses
-
-All incoming PDF files are treated as untrusted payloads:
-1. **Magic Number & MIME Enforcement**: Validates `%PDF-` binary magic bytes and MIME type (`application/pdf`) to prevent malicious executable masquerading.
-2. **File Size & Page Limits**: Maximum file size of 50MB and max page limit of 120 pages to protect against decompression bombs, infinite loops, and Denial of Service (DoS).
-3. **Path Traversal Protection**: Filenames are sanitized with `sanitize_filename` (stripping directory traversal `../`, null bytes, and non-ASCII path characters) and stored in isolated UUID-namespaced directories under `data/uploads/`.
-4. **Prompt Injection Wrap**: Content passed to LLMs is enclosed in strict XML structural delimiters (`<untrusted_document_content>`) with system prompt guardrails preventing instruction override.
-5. **DOM Sanitization**: User-visible strings and quotes are escaped before insertion into the web DOM.
-6. **Zero Credential Exposure**: API keys are read from environment variables or runtime state, never hard-coded or logged.
-
----
-
-## Brownie Points Addressed
-
-| Feature | Implementation in FactLens |
-| :--- | :--- |
-| **Large PDFs Performance** | Page-by-page chunking, streaming text extraction, and layout coordinate filters ensure memory stays constant regardless of PDF size. Excerpts up to 100 pages parse in under 5 seconds. |
-| **Multi-PDF Knowledge Layer** | Relational SQLite schema links documents, pages, facts, and comparisons. Supports arbitrary numbers of concurrent filings across multiple corporate entities and macro institutions. |
-| **Dynamic / Evolving Schema** | Facts are structured as flexible, open-ended entity-metric-value-period quadruples with dynamic scope and ontology mapping rather than fixed SQL columns. |
-| **Incremental Knowledge** | Uploading a new PDF processes only the newly added document and performs cross-document comparisons against existing facts in the knowledge base without rebuilding from scratch. |
-
----
-
-## Production-Oriented Features (Interview-Defensible Architecture)
-
-FactLens includes four production-ready enhancements designed for enterprise deployments:
-
-### 1. Resilient Redis Caching Layer (`factlens/cache.py`)
-- **Key Namespaces**: Keys are structured hierarchically:
-  - Document Facts: `factlens:doc:{sha256}:facts:{version}`
-  - Cross-Doc Comparisons: `factlens:comparisons:{relationship}`
-  - API Responses: `factlens:api:{endpoint}`
-- **Zero-Crash Offline Fallback**: If Redis server is offline or unreachable, `CacheManager` automatically and transparently falls back to in-memory TTL caching. No crashes, no 500 errors.
-- **Cache Invalidation**: Processing new documents automatically purges comparison caches (`invalidate_comparisons()`), keeping read models synchronized.
-
-### 2. Content-Based Duplicate Detection (`factlens/db.py`)
-- **SHA-256 Fingerprinting**: Evaluates file contents rather than filenames. Uploading `delhivery.pdf` and subsequently `renamed_copy.pdf` detects the identical hash.
-- **Race Condition Prevention**: SQLite `UNIQUE INDEX idx_documents_sha256` combined with `create_document_atomic()` ensures concurrent uploads of the same file cannot duplicate records or processing jobs.
-- **Instant Reuse**: When a duplicate is uploaded, the existing document metadata and extracted facts are reused immediately without spawning redundant background worker tasks.
-
-### 3. Asynchronous Background Job Queue (`factlens/queue.py`, `factlens/worker.py`)
-- **Decoupled Upload Flow**: `POST /api/upload` returns `202 Accepted` immediately with a `job_id` and `UploadResponseItem`.
-- **Worker Isolation**: Extraction, grounding verification, and reconciliation run in the background. Failures in one document's processing do not bring down the service or affect other jobs.
-- **Automatic Retries with Backoff**: Unhandled transient failures increment `retry_count` and retry with exponential backoff up to `QUEUE_MAX_RETRIES` before marking state as `failed`.
-- **Status Polling**: `GET /api/jobs/{job_id}` exposes live progress (`0.0` to `1.0`), status (`queued`, `processing`, `completed`, `failed`), and error diagnostics.
-
-### 4. Malware Scanning & Antivirus Integration (`factlens/scanner.py`)
-- **ClamAV Protocol Support**: Streams bytes directly to ClamAV daemon (`clamd`) via TCP (`CLAMAV_HOST:CLAMAV_PORT`) or Unix domain socket (`CLAMAV_SOCKET`) using the `zINSTREAM` protocol.
-- **Fail-Closed Security**: When configured in `clamav` or `fail_closed` mode, scanner unreachability rejects uploads with HTTP 503 for safety.
-- **Transparent Development Mock Mode (`dev_mock`)**: In local environments without ClamAV, `dev_mock` mode checks for EICAR test signatures (`X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*`) and marks clean files with status `mock_scanned`, logging explicit warnings that a real antivirus engine was not run.
-
----
-
-## Running the Automated Test Suite
-
-FactLens includes 36 automated unit and integration tests covering security, extraction, normalization, reconciliation, and all 10 production feature scenarios:
-
-```bash
-# Run full test suite (36 tests)
-.venv/bin/pytest -v
-
-# Run the 10 production feature tests specifically
-.venv/bin/pytest tests/test_production_features.py -v
-```
-
-### Verified Test Scenarios:
-1. Same PDF uploaded twice -> only one processing job runs; second upload returns duplicate info and reuses existing document.
-2. Same PDF with different filename -> detected as duplicate by hash.
-3. Different PDFs produce different hashes.
-4. Redis cache hit -> expensive processing skipped.
-5. Redis unavailable -> app handles requests safely without error (zero-crash fallback).
-6. Background job succeeds -> status becomes completed.
-7. Background job fails -> status becomes failed and retry behavior works.
-8. Malicious/infected file (EICAR) -> rejected before processing with HTTP 400.
-9. Malware scanner unavailable -> safe fail-closed behavior with HTTP 503.
-10. Concurrent duplicate uploads -> database uniqueness constraint prevents duplicate processing.
-
----
-
-## Limitations and Next Steps
-
-1. **Scanned / Rasterized PDF OCR**: FactLens currently relies on digital text layers (`pypdf`, `pdfplumber`). Scanned image PDFs require an OCR engine (e.g. Surya or Tesseract) as a pre-processing step.
-2. **Complex Multi-Header Tables**: Tables with nested, multi-row merged column headers can occasionally split column affiliations. Future work will integrate specialized table-transformers (e.g., Table-Transformer or Nougat).
-
----
-
-## Additional Notes & Evaluation Guarantee
-
-- **Zero-Credential Execution Guarantee**: FactLens does NOT require paid accounts, external databases, Docker daemons, or API keys to be evaluated. Simply running `pytest` or starting the app with `uvicorn` allows full inspection of all four showcase cases and live PDF processing.
-- **Assignment Compliance**:
-  - [x] Project runs from instructions and accepts new PDFs through API and UI.
-  - [x] Results contain grounded facts, source evidence, and cross-document relationships.
-  - [x] Demonstrates all four required cases with exact evidence and reasoning.
-  - [x] Documented approach, decisions, trade-offs, and security practices.
-  - [x] Includes four production-oriented capabilities (Redis caching, duplicate detection, background job queue, malware scanning).
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.

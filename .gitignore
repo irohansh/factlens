@@ -7,4 +7,10 @@ data/*.db
 data/cache/
 .env
 node_modules/
+# Markdown files (ignore all except README.md)
+*.md
+!README.md
+!**/README.md
 
+# Presentation script and internal notes
+PRESENTATION_WALKTHROUGH_SCRIPT.txt
