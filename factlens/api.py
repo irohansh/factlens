@@ -74,6 +74,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/api")
+def api_root():
+    return {
+        "status": "healthy",
+        "service": "FactLens API",
+        "version": "1.0.0"
+    }
+
+
 # Security Headers Middleware
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):

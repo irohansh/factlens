@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FactLens — Grounded Fact Knowledge Layer</title>
+  <meta name="description" content="Evidence-grounded fact extraction, unit normalization, and cross-document reconciliation for multi-PDF intelligence." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="brand-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            <path d="M11 8v6M8 11h6"></path>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">FactLens</span>
+          <span class="brand-subtitle">Evidence-Grounded Fact Knowledge Layer</span>
+        </div>
+      </div>
+
+      <div class="header-status">
+        <div class="status-pill" id="cacheStatusPill" title="Redis Cache Status">
+          <span class="status-dot" style="background-color: #10b981;"></span>
+          <span id="cacheStatusText">Cache Active</span>
+        </div>
+        <div class="status-pill" id="engineStatusPill">
+          <span class="status-dot"></span>
+          <span id="engineStatusText">Offline Deterministic Mode</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" id="btnSettings" title="Configure LLM & Settings">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          <span>Settings</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs" role="tablist">
+      <button class="nav-tab active" data-tab="showcase" id="tabShowcase">
+        <span class="tab-badge-accent">Required</span>
+        <span>Showcase Cases</span>
+      </button>
+      <button class="nav-tab" data-tab="upload" id="tabUpload">
+        <span>Upload & Ingest</span>
+        <span class="tab-counter" id="docCount">0</span>
+      </button>
+      <button class="nav-tab" data-tab="facts" id="tabFacts">
+        <span>Fact Matrix</span>
+        <span class="tab-counter" id="factCount">0</span>
+      </button>
+      <button class="nav-tab" data-tab="comparisons" id="tabComparisons">
+        <span>Cross-Doc Reconciliation</span>
+        <span class="tab-counter" id="cmpCount">0</span>
+      </button>
+      <button class="nav-tab" data-tab="failures" id="tabFailures">
+        <span>Failures & Audit</span>
+        <span class="tab-counter" id="failCount">0</span>
+      </button>
+    </nav>
+
+    <!-- Main Content Views -->
+    <main class="content-container">
+
+      <!-- 1. SHOWCASE TAB -->
+      <section class="tab-pane active" id="pane-showcase">
+        <div class="pane-header">
+          <div>
+            <h1 class="pane-title">Four Core Showcase Cases</h1>
+            <p class="pane-desc">
+              Demonstrating corroboration, genuine contradiction, context-explained difference, and extraction failure handling across both starter datasets.
+            </p>
+          </div>
+          <div class="filter-group">
+            <button class="btn btn-outline btn-sm active" data-dataset="all">All Datasets</button>
+            <button class="btn btn-outline btn-sm" data-dataset="delhivery">Delhivery</button>
+            <button class="btn btn-outline btn-sm" data-dataset="india-macroeconomy">India Macro</button>
+          </div>
+        </div>
+
+        <div class="showcase-grid" id="showcaseList">
+          <!-- Dynamically populated -->
+        </div>
+      </section>
+
+      <!-- 2. UPLOAD & INGEST TAB -->
+      <section class="tab-pane" id="pane-upload">
+        <div class="pane-header">
+          <div>
+            <h2 class="pane-title">PDF Ingestion & Security Validation</h2>
+            <p class="pane-desc">
+              Isolated processing pipeline with MIME validation, magic-byte checks (%PDF-), page limits, and secure filename sanitization.
+            </p>
+          </div>
+          <div>
+            <button class="btn btn-primary" id="btnRunPipeline">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+              </svg>
+              <span>Extract & Reconcile All</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Drag and Drop Zone -->
+        <div class="upload-dropzone" id="dropZone">
+          <input type="file" id="fileInput" multiple accept=".pdf,application/pdf" class="file-input-hidden" />
+          <div class="dropzone-content">
+            <div class="dropzone-icon">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="12" y1="18" x2="12" y2="12"></line>
+                <polyline points="9 15 12 12 15 15"></polyline>
+              </svg>
+            </div>
+            <h3 class="dropzone-title">Drag & drop PDF documents here, or <span class="text-accent">browse</span></h3>
+            <p class="dropzone-limits">Supported: Valid PDF files up to 50MB and 120 pages. PDF content is treated as untrusted input.</p>
+          </div>
+        </div>
+
+        <!-- Active Job Banner -->
+        <div id="jobStatusBanner" class="alert-banner alert-info" style="display:none;">
+          <div class="alert-content">
+            <div class="spinner-small" id="jobSpinner"></div>
+            <span id="jobBannerText">Processing background job...</span>
+          </div>
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" id="jobProgressBar" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <!-- Duplicate Notice Banner -->
+        <div id="duplicateAlertBanner" class="alert-banner alert-success" style="display:none;">
+          <div class="alert-content">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+              <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+            <span id="duplicateAlertText">Duplicate document detected: SHA-256 matched. Existing facts reused without re-processing.</span>
+          </div>
+        </div>
+
+        <!-- Document List -->
+        <div class="section-block">
+          <h3 class="section-title">Uploaded Documents</h3>
+          <div class="doc-table-container">
+            <table class="data-table" id="docTable">
+              <thead>
+                <tr>
+                  <th>Document Name</th>
+                  <th>Entity</th>
+                  <th>Pages</th>
+                  <th>Extracted Facts</th>
+                  <th>File Size</th>
+                  <th>SHA-256 Fingerprint</th>
+                  <th>Malware Scan</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="docTableBody">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. FACT MATRIX TAB -->
+      <section class="tab-pane" id="pane-facts">
+        <div class="pane-header">
+          <div>
+            <h2 class="pane-title">Extracted & Grounded Facts</h2>
+            <p class="pane-desc">
+              Every fact is normalized to base magnitudes and linked to its exact source document, page, and verbatim quote evidence.
+            </p>
+          </div>
+          <div class="search-box">
+            <input type="text" id="factSearchInput" placeholder="Search metric, entity, or value..." class="input-search" />
+          </div>
+        </div>
+
+        <div class="filter-bar">
+          <select id="factEntityFilter" class="select-filter">
+            <option value="">All Entities</option>
+          </select>
+          <select id="factMetricFilter" class="select-filter">
+            <option value="">All Metrics</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" id="btnResetFactFilters">Reset Filters</button>
+        </div>
+
+        <div class="facts-grid" id="factsList">
+          <!-- Dynamically populated -->
+        </div>
+      </section>
+
+      <!-- 4. CROSS-DOCUMENT COMPARISON TAB -->
+      <section class="tab-pane" id="pane-comparisons">
+        <div class="pane-header">
+          <div>
+            <h2 class="pane-title">Cross-Document Reconciliation</h2>
+            <p class="pane-desc">
+              Pairwise cross-document fact analysis classifying relationships into Corroboration, Genuine Contradiction, and Contextual Difference.
+            </p>
+          </div>
+          <div class="filter-group">
+            <button class="btn btn-outline btn-sm active" data-rel="all">All Relationships</button>
+            <button class="btn btn-outline btn-sm" data-rel="corroboration">Corroboration</button>
+            <button class="btn btn-outline btn-sm" data-rel="genuine_contradiction">Contradiction</button>
+            <button class="btn btn-outline btn-sm" data-rel="contextual_difference">Contextual Difference</button>
+          </div>
+        </div>
+
+        <div class="comparisons-list" id="comparisonsList">
+          <!-- Dynamically populated -->
+        </div>
+      </section>
+
+      <!-- 5. FAILURES & AUDIT TAB -->
+      <section class="tab-pane" id="pane-failures">
+        <div class="pane-header">
+          <div>
+            <h2 class="pane-title">Extraction Failures & Transparency Audit</h2>
+            <p class="pane-desc">
+              FactLens explicitly logs ungrounded candidate claims, parsing anomalies, and footnote merges instead of fabricating data.
+            </p>
+          </div>
+        </div>
+
+        <div class="failures-list" id="failuresList">
+          <!-- Dynamically populated -->
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Settings Modal -->
+    <div class="modal-backdrop" id="settingsModal">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 class="modal-title">Engine & Security Settings</h3>
+          <button class="btn-close" id="btnCloseSettings">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-desc">
+            FactLens operates out-of-the-box in <strong>Offline Deterministic Mode</strong> with zero external API requirements.
+            You may optionally configure a Google Gemini API Key to enable generative multi-hop reasoning.
+          </p>
+          <div class="form-group">
+            <label class="form-label" for="inputApiKey">Google Gemini API Key (Optional)</label>
+            <input type="password" id="inputApiKey" placeholder="AIzaSy..." class="form-input" />
+            <small class="form-help">Keys are held in memory during the session and never written to public logs or committed to git.</small>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="btnCancelSettings">Cancel</button>
+          <button class="btn btn-primary" id="btnSaveSettings">Save Configuration</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Evidence Inspection Modal -->
+    <div class="modal-backdrop" id="evidenceModal">
+      <div class="modal-card modal-lg">
+        <div class="modal-header">
+          <h3 class="modal-title" id="evidenceModalTitle">Evidence Grounding Inspection</h3>
+          <button class="btn-close" id="btnCloseEvidence">&times;</button>
+        </div>
+        <div class="modal-body" id="evidenceModalBody">
+          <!-- Content populated on click -->
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
