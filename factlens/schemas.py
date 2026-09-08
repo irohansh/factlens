@@ -65,6 +65,8 @@ class DocumentMetadata(BaseModel):
     scan_result: Optional[str] = None
     scan_timestamp: Optional[str] = None
     error_message: Optional[str] = None
+    entity: Optional[str] = None
+    fact_count: int = 0
 
 class UploadResponseItem(BaseModel):
     document: DocumentMetadata

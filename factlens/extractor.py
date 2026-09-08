@@ -243,9 +243,8 @@ class DeterministicExtractor:
         failures: List[ExtractionFailure] = []
         
         # Split text into sentences/statements
-        # Protect abbreviations like US$, USD, Rs., FY.
-        cleaned_text = page.text.replace("\n", " ")
-        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9₹$])', cleaned_text)
+        # Respect sentence-ending punctuation as well as newline boundaries for headings/slides
+        sentences = [s.strip().replace("\n", " ") for s in re.split(r'(?:(?<=[.!?])\s+|\n+)(?=[A-Z0-9₹$★✎])', page.text) if s.strip()]
 
         for sent in sentences:
             sent_str = sent.strip()
@@ -361,21 +360,31 @@ class DeterministicExtractor:
                 continue
 
             # Open Pattern 1: [Value with unit] followed by [Metric phrase] (e.g. '100% renewable electricity by 2035')
-            p1 = r'(?P<val>[₹$€£]?\s*\(?[\d,.]+\)?\s*(?:%|per cent|percent|GW|MW|kW|kWh|MWh|tons?|tonnes?|kg|km|miles|days|years|Cr|crore|Mn|million|Bn|billion|Lakh)?)\s+(?P<metric>[A-Za-z][A-Za-z\s\-/]{2,35}?)(?:\s+(?:by|in|for|as of|city-wide by)\s+(?P<period>\b20\d{2}\b|FY\d{2,4}))'
+            p1 = r'(?P<val>[₹$€£]?\s*\(?[\d,.]+\)?\s*(?:%|per cent|percent|GW|MW|kW|kWh|MWh|tons?|tonnes?|kg|km|miles|days|years|Cr|crore|Mn|million|Bn|billion|Lakh)?)\s+(?P<metric>[A-Za-z][A-Za-z \t\-/]{2,35}?)(?:\s+(?:by|in|for|as of|city-wide by)\s+(?P<period>\b20\d{2}\b|FY\d{2,4}))'
             
             # Open Pattern 2: [Metric phrase] followed by verb/marker and [Value with unit] (e.g. 'clean energy target: 100%', 'emissions reduced by 25%')
-            p2 = r'(?P<metric>[A-Z][A-Za-z0-9\s\-/]{2,35}?)\s*(?:is|was|of|reached|stood at|increased by|decreased by|moderated to|grew by|targeting|targets|targeted at|estimated at|amounted to|totaled|totalled|total of|equals?|[:=–-])\s*(?P<val>[₹$€£]?\s*\(?[\d,.]+\)?\s*(?:%|per cent|percent|GW|MW|kW|kWh|MWh|tons?|tonnes?|kg|km|miles|days|years|Cr|crore|Mn|million|Bn|billion|Lakh)\b)'
+            p2 = r'(?P<metric>[A-Z][A-Za-z0-9 \t\-/]{2,35}?)\s*(?:is|was|of|reached|stood at|increased by|decreased by|moderated to|grew by|targeting|targets|targeted at|estimated at|amounted to|totaled|totalled|total of|equals?|[:=–-])\s*(?P<val>[₹$€£]?\s*\(?[\d,.]+\)?\s*(?:%|per cent|percent|GW|MW|kW|kWh|MWh|tons?|tonnes?|kg|km|miles|days|years|Cr|crore|Mn|million|Bn|billion|Lakh)\b)'
 
-            for open_pat in (p1, p2):
+            # Open Pattern 3: Quantified structure like 'Planning Process (6 steps)', 'Dimensions (15 total)'
+            p3 = r'(?P<metric>[A-Za-z][A-Za-z \t\-/]{2,30}?)\s*\(\s*(?P<val>\d+)\s*(?P<unit>steps?|types?|principles?|objectives?|aspects?|dimensions?|databases?|targets?|indicators?|total)\s*\)'
+
+            # Open Pattern 4: Value-first percentages like '90% of the paper is scenario-based'
+            p4 = r'(?P<val>\d+[\d,.]*\s*(?:%|percent|per cent))\s+of\s+(?P<metric>(?:the\s+)?[A-Za-z][A-Za-z0-9 \t\-/]{2,40}\b)'
+
+            for open_pat in (p1, p2, p3, p4):
                 for m in re.finditer(open_pat, sent_str, re.IGNORECASE):
                     raw_metric = m.group('metric').strip().strip(':-– ')
+                    raw_metric = re.split(r'[\n\r:—–]', raw_metric)[-1].strip()
+                    raw_metric = re.sub(r'^(?:the|a|an|of|for)\s+', '', raw_metric, flags=re.IGNORECASE).strip()
                     raw_val = m.group('val').strip()
-                    if len(raw_metric) < 3 or raw_metric.lower() in ('the', 'and', 'for', 'with', 'from', 'this', 'that', 'how', 'when', 'both'):
+                    if 'unit' in m.groupdict() and m.group('unit'):
+                        raw_val = f"{raw_val} {m.group('unit').strip()}"
+                    if len(raw_metric) < 3 or raw_metric.lower() in ('and', 'with', 'from', 'this', 'that', 'how', 'when', 'both'):
                         continue
                     val_num, unit = normalize_number_and_unit(raw_val)
                     if val_num is None:
                         continue
-                    if unit == 'count' and val_num < 10:
+                    if unit == 'count' and val_num < 1:
                         continue
 
                     period_str = m.group('period') if 'period' in m.groupdict() and m.group('period') else None
@@ -497,6 +506,8 @@ class LLMExtractor:
                 config={'response_mime_type': 'application/json'}
             )
             raw_json = response.text
+            if not raw_json:
+                return [], []
             items = json.loads(raw_json)
             if isinstance(items, dict) and "facts" in items:
                 items = items["facts"]
@@ -588,7 +599,7 @@ class FactExtractionService:
 
 
             # If LLM is available and page has potential tabular or dense text
-            if use_llm and len(page.text) > 200:
+            if self.llm and use_llm and len(page.text) > 200:
                 l_facts, l_failures = self.llm.extract_from_page(page, doc_name)
                 all_facts.extend(l_facts)
                 all_failures.extend(l_failures)

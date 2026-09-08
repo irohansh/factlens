@@ -72,6 +72,8 @@ def init_db() -> None:
             cur.execute("ALTER TABLE documents ADD COLUMN scan_result TEXT")
         if "scan_timestamp" not in existing_cols:
             cur.execute("ALTER TABLE documents ADD COLUMN scan_timestamp TEXT")
+        if "entity" not in existing_cols:
+            cur.execute("ALTER TABLE documents ADD COLUMN entity TEXT")
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
@@ -162,17 +164,23 @@ def save_document(doc: DocumentMetadata) -> None:
     with get_db_cursor() as cur:
         cur.execute("""
             INSERT OR REPLACE INTO documents 
-            (id, filename, original_name, file_size_bytes, page_count, sha256_hash, upload_timestamp, status, scan_status, scan_result, scan_timestamp, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, filename, original_name, file_size_bytes, page_count, sha256_hash, upload_timestamp, status, scan_status, scan_result, scan_timestamp, error_message, entity)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             doc.id, doc.filename, doc.original_name, doc.file_size_bytes,
             doc.page_count, doc.sha256_hash, doc.upload_timestamp, doc.status,
-            doc.scan_status, doc.scan_result, doc.scan_timestamp, doc.error_message
+            doc.scan_status, doc.scan_result, doc.scan_timestamp, doc.error_message,
+            doc.entity
         ))
 
 def get_document(doc_id: str) -> Optional[DocumentMetadata]:
     with get_db_cursor() as cur:
-        cur.execute("SELECT * FROM documents WHERE id = ?", (doc_id,))
+        cur.execute("""
+            SELECT d.*, 
+                   COALESCE((SELECT COUNT(*) FROM facts f WHERE f.document_id = d.id), 0) AS fact_count
+            FROM documents d 
+            WHERE d.id = ?
+        """, (doc_id,))
         row = cur.fetchone()
         if not row:
             return None
@@ -181,7 +189,12 @@ def get_document(doc_id: str) -> Optional[DocumentMetadata]:
 def get_document_by_hash(sha256_hash: str) -> Optional[DocumentMetadata]:
     """Retrieves document by its content SHA256 hash across all filenames."""
     with get_db_cursor() as cur:
-        cur.execute("SELECT * FROM documents WHERE sha256_hash = ?", (sha256_hash,))
+        cur.execute("""
+            SELECT d.*, 
+                   COALESCE((SELECT COUNT(*) FROM facts f WHERE f.document_id = d.id), 0) AS fact_count
+            FROM documents d 
+            WHERE d.sha256_hash = ?
+        """, (sha256_hash,))
         row = cur.fetchone()
         if not row:
             return None
@@ -198,12 +211,13 @@ def create_document_atomic(doc: DocumentMetadata) -> tuple[bool, DocumentMetadat
         with get_db_cursor() as cur:
             cur.execute("""
                 INSERT INTO documents 
-                (id, filename, original_name, file_size_bytes, page_count, sha256_hash, upload_timestamp, status, scan_status, scan_result, scan_timestamp, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, filename, original_name, file_size_bytes, page_count, sha256_hash, upload_timestamp, status, scan_status, scan_result, scan_timestamp, error_message, entity)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 doc.id, doc.filename, doc.original_name, doc.file_size_bytes,
                 doc.page_count, doc.sha256_hash, doc.upload_timestamp, doc.status,
-                doc.scan_status, doc.scan_result, doc.scan_timestamp, doc.error_message
+                doc.scan_status, doc.scan_result, doc.scan_timestamp, doc.error_message,
+                doc.entity
             ))
         return True, doc
     except sqlite3.IntegrityError:
@@ -227,9 +241,18 @@ def update_document_scan(
             WHERE id = ?
         """, (scan_status, scan_result, ts, doc_id))
 
+def update_document_entity(doc_id: str, entity: str) -> None:
+    with get_db_cursor() as cur:
+        cur.execute("UPDATE documents SET entity = ? WHERE id = ?", (entity, doc_id))
+
 def list_documents() -> List[DocumentMetadata]:
     with get_db_cursor() as cur:
-        cur.execute("SELECT * FROM documents ORDER BY upload_timestamp DESC")
+        cur.execute("""
+            SELECT d.*, 
+                   COALESCE((SELECT COUNT(*) FROM facts f WHERE f.document_id = d.id), 0) AS fact_count
+            FROM documents d 
+            ORDER BY d.upload_timestamp DESC
+        """)
         rows = cur.fetchall()
         return [DocumentMetadata(**dict(r)) for r in rows]
 
@@ -290,7 +313,7 @@ def update_job_status(
     now = utc_now_iso()
     with get_db_cursor() as cur:
         updates = ["status = ?", "updated_at = ?"]
-        params = [status_val, now]
+        params: List[Any] = [status_val, now]
         if progress is not None:
             updates.append("progress = ?")
             params.append(progress)
@@ -332,6 +355,11 @@ def get_pages(doc_id: str) -> List[DocumentPage]:
         cur.execute("SELECT * FROM document_pages WHERE document_id = ? ORDER BY page_number ASC", (doc_id,))
         rows = cur.fetchall()
         return [DocumentPage(**dict(r)) for r in rows]
+
+def clear_document_facts_and_failures(doc_id: str) -> None:
+    with get_db_cursor() as cur:
+        cur.execute("DELETE FROM facts WHERE document_id = ?", (doc_id,))
+        cur.execute("DELETE FROM extraction_failures WHERE document_id = ?", (doc_id,))
 
 def save_facts(facts: List[Fact]) -> None:
     with get_db_cursor() as cur:

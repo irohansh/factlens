@@ -1,0 +1,5 @@
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+python-interpreter-path = ".venv/bin/python"

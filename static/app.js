@@ -70,6 +70,16 @@ document.addEventListener('DOMContentLoaded', () => {
     navTabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
     tabPanes.forEach(p => p.classList.toggle('active', p.id === `pane-${tabId}`));
   }
+  window.switchTab = switchTab;
+
+  window.filterByEntity = function(entityName) {
+    if (!entityName) return;
+    switchTab('facts');
+    if (factEntityFilter) {
+      factEntityFilter.value = entityName;
+      renderFacts();
+    }
+  };
 
   // --- API Health & Initial Load ---
   async function checkHealth() {
@@ -233,20 +243,36 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderDocTable() {
     if (appState.documents.length === 0) {
-      docTableBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color: var(--text-muted);">No documents uploaded yet. Drag and drop PDFs above to start.</td></tr>`;
+      docTableBody.innerHTML = `<tr><td colspan="8" style="text-align:center; color: var(--text-muted);">No documents uploaded yet. Drag and drop PDFs above to start.</td></tr>`;
       return;
     }
 
-    docTableBody.innerHTML = appState.documents.map(d => `
-      <tr>
-        <td><strong>${escapeHtml(d.original_name)}</strong></td>
-        <td><span class="page-tag">${d.page_count} pages</span></td>
-        <td>${(d.file_size_bytes / (1024*1024)).toFixed(2)} MB</td>
-        <td><code style="font-size:0.75rem; color: var(--text-muted);" title="${d.sha256_hash}">${d.sha256_hash.slice(0, 16)}...</code></td>
-        <td>${getScanBadge(d.scan_status, d.scan_result)}</td>
-        <td><span class="badge ${d.status === 'processed' ? 'badge-corroboration' : (d.status === 'queued' ? 'badge-dataset' : 'badge-contextual')}">${d.status}</span></td>
-      </tr>
-    `).join('');
+    docTableBody.innerHTML = appState.documents.map(d => {
+      const entityDisplay = d.entity ? escapeHtml(d.entity) : '<span class="text-secondary">Auto-detecting...</span>';
+      let factsBadge;
+      if (d.status === 'processed') {
+        if (d.fact_count && d.fact_count > 0) {
+          factsBadge = `<span class="badge badge-corroboration" style="cursor:pointer;" onclick="filterByEntity('${escapeHtml(d.entity || '')}')">${d.fact_count} facts</span>`;
+        } else {
+          factsBadge = `<span class="badge badge-contextual" style="cursor:pointer;" onclick="switchTab('failures')" title="No quantitative metrics found on pages. View audit log in Failures tab.">0 facts (Audit)</span>`;
+        }
+      } else {
+        factsBadge = `<span class="badge badge-dataset">Pending</span>`;
+      }
+
+      return `
+        <tr>
+          <td><strong>${escapeHtml(d.original_name)}</strong></td>
+          <td><span class="fact-entity" style="font-size:0.8rem; cursor:pointer;" onclick="filterByEntity('${escapeHtml(d.entity || '')}')">${entityDisplay}</span></td>
+          <td><span class="page-tag">${d.page_count} pages</span></td>
+          <td>${factsBadge}</td>
+          <td>${(d.file_size_bytes / (1024*1024)).toFixed(2)} MB</td>
+          <td><code style="font-size:0.75rem; color: var(--text-muted);" title="${d.sha256_hash}">${d.sha256_hash.slice(0, 16)}...</code></td>
+          <td>${getScanBadge(d.scan_status, d.scan_result)}</td>
+          <td><span class="badge ${d.status === 'processed' ? 'badge-corroboration' : (d.status === 'queued' ? 'badge-dataset' : 'badge-contextual')}">${d.status}</span></td>
+        </tr>
+      `;
+    }).join('');
   }
 
   // Upload dropzone interactions
@@ -387,11 +413,17 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function populateFactFilters() {
-    const entities = [...new Set(appState.facts.map(f => f.entity))].sort();
+    const factEntities = new Set(appState.facts.map(f => f.entity));
+    const docEntities = new Set((appState.documents || []).map(d => d.entity).filter(Boolean));
+    const allEntities = [...new Set([...factEntities, ...docEntities])].sort();
     const metrics = [...new Set(appState.facts.map(f => f.metric))].sort();
 
-    factEntityFilter.innerHTML = `<option value="">All Entities (${entities.length})</option>` +
-      entities.map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join('');
+    factEntityFilter.innerHTML = `<option value="">All Entities (${allEntities.length})</option>` +
+      allEntities.map(e => {
+        const count = appState.facts.filter(f => f.entity === e).length;
+        const countSuffix = count > 0 ? ` (${count} facts)` : ` (0 facts - see Failures)`;
+        return `<option value="${escapeHtml(e)}">${escapeHtml(e)}${countSuffix}</option>`;
+      }).join('');
 
     factMetricFilter.innerHTML = `<option value="">All Metrics (${metrics.length})</option>` +
       metrics.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
@@ -413,6 +445,23 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     if (filtered.length === 0) {
+      if (entFilter) {
+        factsList.innerHTML = `
+          <div class="empty-state" style="grid-column: 1/-1; padding: 2.5rem; text-align: center; background: rgba(255,255,255,0.03); border-radius: 12px; border: 1px dashed rgba(255,255,255,0.15);">
+            <div style="font-size: 2.2rem; margin-bottom: 0.5rem;">📄</div>
+            <h3 style="margin-bottom: 0.5rem;">No Grounded Facts for "${escapeHtml(entFilter)}"</h3>
+            <p class="text-secondary" style="max-width: 620px; margin: 0 auto 1.2rem auto; font-size: 0.9rem; line-height: 1.5;">
+              FactLens operates in deterministic offline mode by default, looking for explicit quantitative metrics (revenues, percentages, counts, growth rates).
+              If this document contains qualitative course notes or descriptive prose, page-by-page audit records are logged under the <strong>Failures & Audit</strong> tab.
+            </p>
+            <div style="display:flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;">
+              <button class="btn btn-secondary btn-sm" onclick="switchTab('failures')">Inspect Failures & Audit Log</button>
+              <button class="btn btn-primary btn-sm" onclick="document.getElementById('settingsModal').classList.add('active')">Configure Gemini LLM Mode</button>
+            </div>
+          </div>
+        `;
+        return;
+      }
       factsList.innerHTML = `<p class="text-secondary" style="grid-column: 1/-1;">No matching facts found.</p>`;
       return;
     }

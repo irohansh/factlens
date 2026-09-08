@@ -100,6 +100,7 @@ def process_document_job(job_id: str, doc_id: str) -> bool:
 
             # Extract facts and detect failures
             facts, failures = fact_extractor.extract_document(pages, doc.filename)
+            db.clear_document_facts_and_failures(doc_id)
             if facts:
                 db.save_facts(facts)
             if failures:
@@ -114,7 +115,10 @@ def process_document_job(job_id: str, doc_id: str) -> bool:
             }
             cache.set(cache_key, cache_payload, ttl=settings.CACHE_TTL_FACTS)
 
-        # Update document status to processed
+        # Update document entity and status to processed
+        sample_text = pages[0].text if pages else ""
+        doc_entity = fact_extractor.deterministic.infer_document_entity(doc.filename, sample_text)
+        db.update_document_entity(doc_id, doc_entity)
         db.update_document_status(doc_id, "processed", page_count=len(pages))
         db.update_job_status(job_id, JobStatus.PROCESSING, progress=0.85)
 

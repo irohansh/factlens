@@ -173,6 +173,7 @@ async def upload_pdfs(files: List[UploadFile] = File(...)):
             with open(saved_path, "wb") as f_out:
                 f_out.write(content)
 
+            doc_entity = fact_extractor.deterministic.infer_document_entity(file.filename or safe_name, "")
             doc_meta = DocumentMetadata(
                 id=doc_id,
                 filename=safe_name,
@@ -182,7 +183,8 @@ async def upload_pdfs(files: List[UploadFile] = File(...)):
                 sha256_hash=sha256,
                 status="queued",
                 scan_status=scan_status.value,
-                scan_result=scan_detail
+                scan_result=scan_detail,
+                entity=doc_entity
             )
 
             # Atomically insert into DB enforcing sha256 uniqueness constraint
@@ -283,6 +285,10 @@ def process_pipeline(
 
         facts, failures = fact_extractor.extract_document(pages, doc.filename, force_deterministic)
         
+        sample_text = pages[0].text if pages else ""
+        doc_entity = fact_extractor.deterministic.infer_document_entity(doc.filename, sample_text)
+        db.update_document_entity(doc.id, doc_entity)
+        db.clear_document_facts_and_failures(doc.id)
         db.save_facts(facts)
         db.save_failures(failures)
         db.update_document_status(doc.id, "processed", page_count=len(pages))
