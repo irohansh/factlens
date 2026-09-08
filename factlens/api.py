@@ -62,8 +62,11 @@ app = FastAPI(
     title="FactLens API",
     description="Evidence-Grounded Fact Knowledge Layer for Multi-PDF Analysis",
     version="1.0.0",
+    docs_url="/api/docs",
+    openapi_url="/api/openapi.json",
     lifespan=lifespan
 )
+
 
 # CORS
 app.add_middleware(
