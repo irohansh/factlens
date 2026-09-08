@@ -45,9 +45,18 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize background queue consumers on startup, clean up on shutdown."""
-    get_queue().start()
+    try:
+        if not settings.IS_VERCEL:
+            get_queue().start()
+    except Exception as e:
+        logger.warning(f"Failed to start background queue consumers: {e}")
     yield
-    get_queue().stop()
+    try:
+        if not settings.IS_VERCEL:
+            get_queue().stop()
+    except Exception:
+        pass
+
 
 app = FastAPI(
     title="FactLens API",

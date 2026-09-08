@@ -21,8 +21,12 @@ from factlens.schemas import (
 )
 
 def get_db_path() -> Path:
-    settings.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        settings.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except (OSError, PermissionError):
+        pass
     return settings.DB_PATH
+
 
 @contextmanager
 def get_db_cursor():
@@ -507,5 +511,10 @@ def get_failures(document_id: Optional[str] = None) -> List[ExtractionFailure]:
             )
         return results
 
-# Initialize DB on load
-init_db()
+# Initialize DB on load safely
+try:
+    init_db()
+except Exception as e:
+    import logging
+    logging.getLogger("factlens.db").warning(f"Database auto-init deferred: {e}")
+

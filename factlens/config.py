@@ -4,23 +4,45 @@ import os
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Detect serverless environment (Vercel, AWS Lambda)
-IS_VERCEL = os.getenv("VERCEL", "0") == "1" or "VERCEL" in os.environ or "AWS_LAMBDA_FUNCTION_NAME" in os.environ
+IS_VERCEL: bool = bool(
+    os.getenv("VERCEL")
+    or os.getenv("VERCEL_ENV")
+    or os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+    or os.getenv("LAMBDA_TASK_ROOT")
+)
+
+def _resolve_writable_path(env_key: str, default_rel: str, fallback_tmp: str) -> Path:
+    raw = os.getenv(env_key, "").strip()
+    if raw:
+        candidate = Path(raw) if Path(raw).is_absolute() else BASE_DIR / raw
+    elif IS_VERCEL:
+        candidate = Path(fallback_tmp)
+    else:
+        candidate = BASE_DIR / default_rel
+
+    try:
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        test_file = candidate.parent / f".write_test_{os.getpid()}"
+        test_file.touch()
+        test_file.unlink()
+        return candidate
+    except (OSError, PermissionError):
+        fallback = Path(fallback_tmp)
+        try:
+            fallback.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return fallback
 
 class Settings:
     BASE_DIR: Path = BASE_DIR
+    IS_VERCEL: bool = IS_VERCEL
     HOST: str = os.getenv("FACTLENS_HOST", "0.0.0.0")
     PORT: int = int(os.getenv("FACTLENS_PORT", "8000"))
     DEBUG: bool = os.getenv("FACTLENS_DEBUG", "true").lower() in ("true", "1", "yes")
     
-    # In Vercel serverless functions, root filesystem is read-only; use /tmp
-    default_db = "/tmp/factlens.db" if IS_VERCEL else "data/factlens.db"
-    default_upload = "/tmp/uploads" if IS_VERCEL else "data/uploads"
-    
-    db_env = os.getenv("FACTLENS_DB_PATH", default_db)
-    DB_PATH: Path = Path(db_env) if Path(db_env).is_absolute() else BASE_DIR / db_env
-
-    upload_env = os.getenv("UPLOAD_DIR", default_upload)
-    UPLOAD_DIR: Path = Path(upload_env) if Path(upload_env).is_absolute() else BASE_DIR / upload_env
+    DB_PATH: Path = _resolve_writable_path("FACTLENS_DB_PATH", "data/factlens.db", "/tmp/factlens.db")
+    UPLOAD_DIR: Path = _resolve_writable_path("UPLOAD_DIR", "data/uploads", "/tmp/uploads")
     
     MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
     MAX_PAGE_COUNT: int = int(os.getenv("MAX_PAGE_COUNT", "120"))
@@ -60,4 +82,5 @@ class Settings:
 settings = Settings()
 
 settings.init_dirs()
+
 
