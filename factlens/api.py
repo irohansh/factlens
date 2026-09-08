@@ -391,5 +391,10 @@ def seed_starter_cases():
 
 # Serve static frontend assets
 static_dir = settings.BASE_DIR / "static"
-static_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
+try:
+    static_dir.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
+if static_dir.exists():
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
+

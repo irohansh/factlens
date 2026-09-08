@@ -3,14 +3,24 @@ import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Detect serverless environment (Vercel, AWS Lambda)
+IS_VERCEL = os.getenv("VERCEL", "0") == "1" or "VERCEL" in os.environ or "AWS_LAMBDA_FUNCTION_NAME" in os.environ
+
 class Settings:
     BASE_DIR: Path = BASE_DIR
     HOST: str = os.getenv("FACTLENS_HOST", "0.0.0.0")
     PORT: int = int(os.getenv("FACTLENS_PORT", "8000"))
     DEBUG: bool = os.getenv("FACTLENS_DEBUG", "true").lower() in ("true", "1", "yes")
     
-    DB_PATH: Path = BASE_DIR / os.getenv("FACTLENS_DB_PATH", "data/factlens.db")
-    UPLOAD_DIR: Path = BASE_DIR / os.getenv("UPLOAD_DIR", "data/uploads")
+    # In Vercel serverless functions, root filesystem is read-only; use /tmp
+    default_db = "/tmp/factlens.db" if IS_VERCEL else "data/factlens.db"
+    default_upload = "/tmp/uploads" if IS_VERCEL else "data/uploads"
+    
+    db_env = os.getenv("FACTLENS_DB_PATH", default_db)
+    DB_PATH: Path = Path(db_env) if Path(db_env).is_absolute() else BASE_DIR / db_env
+
+    upload_env = os.getenv("UPLOAD_DIR", default_upload)
+    UPLOAD_DIR: Path = Path(upload_env) if Path(upload_env).is_absolute() else BASE_DIR / upload_env
     
     MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
     MAX_PAGE_COUNT: int = int(os.getenv("MAX_PAGE_COUNT", "120"))
@@ -21,7 +31,8 @@ class Settings:
 
     # Redis & Caching
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
-    REDIS_CACHE_ENABLED: bool = os.getenv("REDIS_CACHE_ENABLED", "true").lower() in ("true", "1", "yes")
+    default_redis_enabled = "false" if IS_VERCEL else "true"
+    REDIS_CACHE_ENABLED: bool = os.getenv("REDIS_CACHE_ENABLED", default_redis_enabled).lower() in ("true", "1", "yes")
     CACHE_TTL_DEFAULT: int = int(os.getenv("CACHE_TTL_DEFAULT", "3600"))
     CACHE_TTL_FACTS: int = int(os.getenv("CACHE_TTL_FACTS", "86400"))
 
@@ -33,15 +44,20 @@ class Settings:
     CLAMAV_TIMEOUT_SECONDS: int = int(os.getenv("CLAMAV_TIMEOUT_SECONDS", "10"))
 
     # Background Job Queue
-    QUEUE_MODE: str = os.getenv("QUEUE_MODE", "redis").lower()  # redis, thread
+    default_queue_mode = "thread" if IS_VERCEL else "redis"
+    QUEUE_MODE: str = os.getenv("QUEUE_MODE", default_queue_mode).lower()  # redis, thread
     QUEUE_MAX_RETRIES: int = int(os.getenv("QUEUE_MAX_RETRIES", "3"))
     JOB_TIMEOUT_SECONDS: int = int(os.getenv("JOB_TIMEOUT_SECONDS", "120"))
 
     @classmethod
     def init_dirs(cls) -> None:
-        cls.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        cls.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            cls.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            cls.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
 
 settings = Settings()
 
 settings.init_dirs()
+
